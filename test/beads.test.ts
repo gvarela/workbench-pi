@@ -5,6 +5,8 @@ import { parseSilentId, planBeadsTree } from "../src/tools/beads.ts";
 test("parseSilentId extracts the id from --silent output, ignoring noise", () => {
   assert.equal(parseSilentId("bd-a3f8e9\n"), "bd-a3f8e9");
   assert.equal(parseSilentId("warning: something\nMain-sf0z\n"), "Main-sf0z");
+  // prefixes can contain hyphens → ids with multiple hyphens must still parse
+  assert.equal(parseSilentId("workbench-pi-3nq\n"), "workbench-pi-3nq");
   assert.equal(parseSilentId("no id here"), undefined);
   assert.equal(parseSilentId(""), undefined);
 });

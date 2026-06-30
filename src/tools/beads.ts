@@ -33,7 +33,9 @@ export interface BeadsPlan {
   deps: BeadsDep[];
 }
 
-const ID_RE = /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+$/;
+// bd ids are <prefix>-<suffix>; the prefix itself may contain hyphens
+// (e.g. "workbench-pi-3nq"), so allow hyphens before the final segment.
+const ID_RE = /^[A-Za-z][A-Za-z0-9-]*-[A-Za-z0-9]+$/;
 
 /** Extract a bd issue id from `bd create --silent` output (last matching line). */
 export function parseSilentId(stdout: string): string | undefined {
