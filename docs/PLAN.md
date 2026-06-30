@@ -194,7 +194,7 @@ Each phase ships with automatic validation runnable via `scripts/validate.sh`.
 | 2 | `verify-paths` grounding tool + 4 subagents + `/wb-setup` sync | unit: path grounding (real vs hallucinated); setup sync idempotency |
 | 3 | Small-tier **research orchestrator** (locator→analyzer→synthesize→research.md) | unit: state-machine transitions on mocked agent outputs; PoC run on qwen |
 | ✅ 4 | `beads` tool (deterministic ID capture) + `/wb-design`, `/wb-execution` | unit: tree planner + id parser + task-plan parse/assemble; **e2e verified** against real `bd` (caught & fixed a hyphenated-prefix id-parsing bug) |
-| 5 | Discipline gates + escape hatch + coordinated `/wb-implement` + `/wb-validate` | unit: gate blocks/allows on crafted tool_call events; override path |
+| ✅ 5 | Discipline gates + escape hatch + coordinated `/wb-implement` + `/wb-validate` | unit: gate predicates (claim/write/verify-cmd), ready-issue + verdict parsing. Gates scoped to /wb-implement; **primary gate is structural** (bead closes only on verifier PASS). Live `/wb-implement` e2e still pending a filled design. |
 | 6 | Reasoning-tier rich prompts behind the switch + README | unit: tier selection picks correct prompt set; docs lint |
 
 Checkpoint cadence: proceed autonomously; **hard stop at Phase 3** (the qwen

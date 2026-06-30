@@ -28,20 +28,31 @@ pi   # then run /wb-setup once to register the subagents
 | `/wb-research <topic>` | Orchestrated subagents → `research.md` (facts only) |
 | `/wb-design <topic>` | Draft `design.md` (small tier: gathered context + decisions checklist for you; reasoning tier: model-led) |
 | `/wb-execution [epic title]` | `wb-planner` → phased tasks → deterministic beads issue tree → `tasks.md` (ids captured in code) |
-| `/wb-implement`, `/wb-validate` | (in progress — Phase 5) |
+| `/wb-implement [n]` | Work the next `n` ready beads tasks with fresh-context TDD workers; each closes only if `wb-verifier` independently passes (one retry on fail) |
+| `/wb-validate` | Run the suite + verifier against the plan; writes `validation.md` |
+| `/wb-override` | Escape hatch: toggle the discipline gates off/on for the session |
 
-Requires the `bd` (beads) CLI for `/wb-execution`; run `bd init` once in your project.
+Requires the `bd` (beads) CLI for `/wb-execution` and `/wb-implement`; run `bd init` once in your project.
+
+**Discipline gates** arm only during `/wb-implement`: the primary gate is structural
+(a task's bead closes only on an independent verifier PASS); backstop hooks block
+production-code writes before a failing test and warn on unverified success claims.
+`/wb-override` bypasses them.
 
 Tools: `wb_verify_paths` (ground paths vs `git ls-files`), `wb_ping`.
 
-Subagents (installed by `/wb-setup`): `wb-locator`, `wb-analyzer`, `wb-pattern`, `wb-planner`, `wb-verifier`.
+Subagents (installed by `/wb-setup`): `wb-locator`, `wb-analyzer`, `wb-pattern`, `wb-planner`, `wb-implementer`, `wb-verifier`.
 
 ## Develop
 
 ```bash
-npm run validate           # syntax + unit tests (fast)
+npm run validate                # syntax + unit tests (fast)
 ./scripts/validate.sh --smoke   # also load in Pi + round-trip a tool (needs pi + Ollama)
+# quick load + tool check (only this extension):
+scripts/pi-run.sh -e ./src/index.ts -ne -nc --no-session -p "Call wb_ping and report verbatim."
+# full command (loads subagent extension too):
+PI_RUN_TIMEOUT=300 scripts/pi-run.sh -e ./src/index.ts -nc --no-session -p "/wb-research <topic>"
 ```
 
-Validation routes through `scripts/run-silent.sh` — context-efficient backpressure
-("Success = ✓. Failure = full output.").
+- `scripts/run-silent.sh` — context-efficient backpressure ("Success = ✓. Failure = full output.").
+- `scripts/pi-run.sh` — thin timeout guard around `pi` (`PI_RUN_TIMEOUT` secs); you pass all pi flags/prompt.

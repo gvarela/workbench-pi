@@ -23,8 +23,7 @@ if [[ "${1:-}" == "--smoke" ]]; then
     echo "⏭  smoke skipped: Ollama not reachable at :11434"
   else
     $RS "pi load + wb_ping round-trip" bash -c '
-      out=$(perl -e "alarm 150; exec @ARGV" \
-        pi -e ./src/index.ts -ne -nc --no-session \
+      out=$(scripts/pi-run.sh -e ./src/index.ts -ne -nc --no-session \
         -p "Call the wb_ping tool right now, then report verbatim what text it returned." 2>&1)
       echo "$out"
       echo "$out" | grep -q "workbench-pi v.* active (tier:"
