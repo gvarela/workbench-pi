@@ -22,6 +22,8 @@ import { syncAgents, agentsTargetDir } from "./setup.js";
 import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft } from "./orchestrator.js";
 import { parseTaskPlan, assembleTasksBody } from "./execution.js";
 import { planBeadsTree, createBeadsTree } from "./tools/beads.js";
+import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
+import { parseReadyIssues, parseVerdict } from "./implement.js";
 
 /** Minimal view of the @tintinweb/pi-subagents manager exposed via globalThis. */
 interface SubagentManager {
@@ -42,6 +44,14 @@ function isoDate(): string {
 
 export default function workbenchPi(pi: ExtensionAPI) {
   let tier: Tier = resolveTier();
+
+  // Discipline-gate state. Gates arm only while implementMode is on (entered by
+  // /wb-implement) and can be bypassed for the session with /wb-override.
+  let implementMode = false;
+  let gatesOverridden = false;
+  let verifiedThisTurn = false; // a verification command ran this turn
+  let failingTestObserved = false; // a test run failed (Red) — clears when tests pass (Green)
+  const gatesArmed = () => implementMode && !gatesOverridden;
 
   const plansRootOf = (cwd: string) => join(cwd, "docs", "plans");
   const findPlanDir = (cwd: string): string | undefined => {
@@ -297,6 +307,113 @@ export default function workbenchPi(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("wb-implement", {
+    description: "Work ready beads tasks via fresh-context TDD workers, gated by an independent verifier",
+    handler: async (args, ctx) => {
+      const mgr = subagentManager();
+      if (!mgr) {
+        ctx.ui.notify("wb-implement needs @tintinweb/pi-subagents + /wb-setup.", "error");
+        return;
+      }
+      const bd = async (a: string[]) => pi.exec("bd", a, { cwd: ctx.cwd, timeout: 15_000 }).catch(() => ({ code: 1, stdout: "", stderr: "bd not found", killed: false }));
+      if ((await bd(["version"])).code !== 0) {
+        ctx.ui.notify("beads CLI (bd) not found.", "error");
+        return;
+      }
+      if ((await bd(["where"])).code !== 0) {
+        ctx.ui.notify("beads not initialized here. Run `bd init` first.", "warning");
+        return;
+      }
+      const ready = parseReadyIssues((await bd(["ready", "--json"])).stdout);
+      if (ready.length === 0) {
+        ctx.ui.notify("No ready tasks. Run /wb-execution first (or all tasks are done/blocked).", "info");
+        return;
+      }
+      const limit = Math.max(1, Number.parseInt((args ?? "").trim(), 10) || 1);
+      const batch = ready.slice(0, limit);
+      const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-implement", s);
+
+      // structural gate: a task closes only if the verifier independently returns PASS.
+      const attempt = async (task: { id: string; title: string }, feedback?: string) => {
+        const work = await runAgent(mgr, ctx, "wb-implementer",
+          `Task ${task.id}: ${task.title}\nImplement this and ONLY this, TDD, in the current repo.` +
+            (feedback ? `\n\nA previous attempt FAILED verification:\n${feedback}\nFix it.` : ""),
+          `impl ${task.id}`);
+        const verify = await runAgent(mgr, ctx, "wb-verifier",
+          `Task ${task.id}: ${task.title}\nVerify the work just done: run the tests and check scope. Worker report:\n${work}`,
+          `verify ${task.id}`);
+        return { verify, verdict: parseVerdict(verify) };
+      };
+
+      implementMode = true;
+      const results: string[] = [];
+      try {
+        for (const task of batch) {
+          setStatus(`implement ${task.id}…`);
+          await bd(["update", task.id, "--status", "in_progress"]);
+          let { verify, verdict } = await attempt(task);
+          if (verdict !== "PASS") {
+            setStatus(`retry ${task.id}…`);
+            ({ verify, verdict } = await attempt(task, verify));
+          }
+          if (verdict === "PASS") {
+            await bd(["close", task.id]);
+            results.push(`✓ ${task.id}`);
+          } else {
+            await bd(["update", task.id, "--status", "open"]);
+            results.push(`✗ ${task.id} (${verdict})`);
+          }
+        }
+        await bd(["sync"]);
+      } finally {
+        implementMode = false;
+        setStatus(undefined);
+      }
+      ctx.ui.notify(`wb-implement: ${results.join("  ")}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
+    },
+  });
+
+  pi.registerCommand("wb-validate", {
+    description: "Validate the implementation against the plan (runs tests + verifier, writes validation.md)",
+    handler: async (_args, ctx) => {
+      implementMode = false; // validation disarms the implement gates
+      const mgr = subagentManager();
+      if (!mgr) {
+        ctx.ui.notify("wb-validate needs @tintinweb/pi-subagents + /wb-setup.", "error");
+        return;
+      }
+      const planDir = findPlanDir(ctx.cwd);
+      if (!planDir) {
+        ctx.ui.notify("No plan found under docs/plans/. Run /wb-project first.", "warning");
+        return;
+      }
+      const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-validate", s);
+      try {
+        setStatus("validating…");
+        const report = await runAgent(mgr, ctx, "wb-verifier",
+          `Validate this project against its plan in docs/plans/${planDir}/tasks.md. ` +
+            `Run the full fast test suite, confirm the planned tasks are actually implemented, and report PASS/FAIL with evidence.`,
+          "validate");
+        const verdict = parseVerdict(report);
+        const path = join(plansRootOf(ctx.cwd), planDir, "validation.md");
+        writeFileSync(path, `# Validation: ${planDir}\n\nVerdict: ${verdict}\n\n${report}\n`, "utf-8");
+        setStatus(undefined);
+        ctx.ui.notify(`wb-validate: ${verdict} → docs/plans/${planDir}/validation.md`, verdict === "PASS" ? "info" : "warning");
+      } catch (e) {
+        setStatus(undefined);
+        ctx.ui.notify(`wb-validate failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("wb-override", {
+    description: "Toggle the workbench discipline gates off/on for this session (escape hatch)",
+    handler: async (_args, ctx) => {
+      gatesOverridden = !gatesOverridden;
+      ctx.ui.notify(`workbench-pi gates ${gatesOverridden ? "BYPASSED" : "re-armed"} for this session.`, "info");
+    },
+  });
+
   pi.registerCommand("wb-help", {
     description: "Show workbench-pi commands and the active tier",
     handler: async (_args, ctx) => {
@@ -349,5 +466,40 @@ export default function workbenchPi(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     tier = resolveTier(ctx.model?.id);
     return { systemPrompt: `${event.systemPrompt}\n\n${systemPromptFragment(tier)}\n` };
+  });
+
+  // --- Discipline gates (armed only during /wb-implement; /wb-override bypasses) ---
+  pi.on("turn_start", async () => {
+    verifiedThisTurn = false;
+  });
+
+  // Observe verification runs so the gates know test state.
+  pi.on("tool_result", async (event) => {
+    if (!implementMode || event.toolName !== "bash") return;
+    const cmd = String((event.input as Record<string, unknown>)?.command ?? "");
+    if (!isVerificationCommand(cmd)) return;
+    verifiedThisTurn = !event.isError; // a passing verification enables done-claims
+    failingTestObserved = event.isError === true; // a failing test (Red) enables source writes
+  });
+
+  // Block production-code writes before a failing test (Red→Green).
+  pi.on("tool_call", async (event) => {
+    if (!gatesArmed() || (event.toolName !== "write" && event.toolName !== "edit")) return;
+    const input = event.input as Record<string, unknown>;
+    const path = String(input?.path ?? input?.file_path ?? "");
+    if (!path) return;
+    const d = writeGate(path, failingTestObserved);
+    if (d.block) return { block: true, reason: d.reason };
+  });
+
+  // Soft backstop: nudge when a done-claim appears without a passing verification.
+  pi.on("message_end", async (event, ctx) => {
+    if (!gatesArmed()) return;
+    const text = (event.message?.content ?? [])
+      .map((c: { type: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : ""))
+      .join(" ");
+    if (claimGate(text, verifiedThisTurn).block) {
+      ctx?.ui?.notify?.("workbench-pi: success claimed without a passing verification run this turn. Run the tests (or /wb-override).", "warning");
+    }
   });
 }
