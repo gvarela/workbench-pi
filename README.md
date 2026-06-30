@@ -26,9 +26,15 @@ pi   # then run /wb-setup once to register the subagents
 | `/wb-setup` | Install the workbench subagents into `~/.pi/agent/agents/` |
 | `/wb-project [TICKET-123] <name>` | Scaffold `docs/plans/<date-name>/` (research / design / tasks) |
 | `/wb-research <topic>` | Orchestrated subagents → `research.md` (facts only) |
-| `/wb-design`, `/wb-execution`, `/wb-implement`, `/wb-validate` | (in progress) |
+| `/wb-design <topic>` | Draft `design.md` (small tier: gathered context + decisions checklist for you; reasoning tier: model-led) |
+| `/wb-execution [epic title]` | `wb-planner` → phased tasks → deterministic beads issue tree → `tasks.md` (ids captured in code) |
+| `/wb-implement`, `/wb-validate` | (in progress — Phase 5) |
+
+Requires the `bd` (beads) CLI for `/wb-execution`; run `bd init` once in your project.
 
 Tools: `wb_verify_paths` (ground paths vs `git ls-files`), `wb_ping`.
+
+Subagents (installed by `/wb-setup`): `wb-locator`, `wb-analyzer`, `wb-pattern`, `wb-planner`, `wb-verifier`.
 
 ## Develop
 

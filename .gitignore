@@ -9,5 +9,7 @@ dist/
 # never in the workbench-pi package itself.
 docs/plans/
 
-# local beads db (dogfood)
+# local beads db + bd-init byproducts (dogfood only; not part of the package)
 .beads/
+AGENTS.md
+.gitattributes
