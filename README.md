@@ -43,6 +43,19 @@ Tools: `wb_verify_paths` (ground paths vs `git ls-files`), `wb_ping`.
 
 Subagents (installed by `/wb-setup`): `wb-locator`, `wb-analyzer`, `wb-pattern`, `wb-planner`, `wb-implementer`, `wb-verifier`.
 
+## Tiers
+
+`WORKBENCH_TIER` or the active model selects behavior (default `small`):
+
+- **small** (qwen/local): the extension owns control flow — narrow subagents, deterministic assembly, hard gates, path grounding. The model is a slot-filler.
+- **reasoning** (Claude/GPT/etc. — auto-detected from the model id, or forced with `WORKBENCH_TIER=reasoning`): the model leads. `/wb-research` and `/wb-design` become model-led (it fans out subagents and synthesizes the artifact itself); `/wb-execution` and `/wb-implement` keep the deterministic beads tree + verifier-gated close, but their subagents run on the stronger model.
+
+```bash
+pi --provider anthropic --model sonnet    # → reasoning tier automatically
+WORKBENCH_TIER=reasoning pi …             # force reasoning on any model
+WORKBENCH_TIER=small pi …                 # force small on any model
+```
+
 ## Develop
 
 ```bash
