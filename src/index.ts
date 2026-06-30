@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { resolveTier, type Tier } from "./tier.js";
-import { systemPromptFragment } from "./prompts.js";
+import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt } from "./prompts.js";
 import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
 import { groundPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
@@ -143,18 +143,23 @@ export default function workbenchPi(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /wb-research <topic>", "warning");
         return;
       }
-      const mgr = subagentManager();
-      if (!mgr) {
-        ctx.ui.notify("wb-research needs @tintinweb/pi-subagents installed and agents synced (run /wb-setup, then a fresh session).", "error");
-        return;
-      }
-      const plansRoot = join(ctx.cwd, "docs", "plans");
-      const planDir = pickPlanDir(existsSync(plansRoot) ? readdirSync(plansRoot) : []);
+      const planDir = findPlanDir(ctx.cwd);
       if (!planDir) {
         ctx.ui.notify("No plan found under docs/plans/. Run /wb-project first.", "warning");
         return;
       }
-      const researchPath = join(plansRoot, planDir, "research.md");
+      // Reasoning tier: the capable model researches and synthesizes research.md itself.
+      if (resolveTier(ctx.model?.id) === "reasoning") {
+        pi.sendUserMessage(researchDelegationPrompt(topic, planDir));
+        return;
+      }
+      // Small tier: extension-owned orchestration + deterministic assembly.
+      const mgr = subagentManager();
+      if (!mgr) {
+        ctx.ui.notify("wb-research (small tier) needs @tintinweb/pi-subagents + /wb-setup.", "error");
+        return;
+      }
+      const researchPath = join(plansRootOf(ctx.cwd), planDir, "research.md");
 
       const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-research", s);
       try {
@@ -208,10 +213,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
       const designPath = join(plansRootOf(ctx.cwd), planDir, "design.md");
 
       if (resolveTier(ctx.model?.id) === "reasoning") {
-        pi.sendUserMessage(
-          `Lead an interactive design discussion for "${topic}". Read docs/plans/${planDir}/research.md first. ` +
-            `Then write WHAT/WHY decisions (no implementation steps) to docs/plans/${planDir}/design.md and set its frontmatter status to "ready".`,
-        );
+        pi.sendUserMessage(designDelegationPrompt(topic, planDir));
         return;
       }
 

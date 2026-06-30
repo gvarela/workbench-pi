@@ -1,12 +1,13 @@
 /**
- * Tier-aware system-prompt fragments injected via before_agent_start.
+ * Tier-aware prompting.
  *
- * small     — terse, imperative, names the deterministic commands and the hard
- *             rules the model must not violate. The model is a slot-filler.
- * reasoning — restores the workbench's model-led framing.
+ * small     — terse, imperative; names the deterministic commands and the hard
+ *             rules. The model is a slot-filler; the extension owns control flow.
+ * reasoning — restores the workbench's model-led framing and full disciplines for
+ *             a capable model. The model leads; the extension scaffolds.
  *
- * Kept small here; Phase 6 expands the reasoning fragment with the full rich
- * workbench guidance.
+ * The reasoning-tier commands that delegate to the model (research, design) build
+ * their instruction text from the pure builders below so they're unit-testable.
  */
 
 import type { Tier } from "./tier.ts";
@@ -30,10 +31,41 @@ Hard rules (enforced by gates):
 Keep outputs short and structured. Fill the templates; don't editorialize.`;
 
 const REASONING = `## workbench-pi (tier: reasoning)
-You run the workbench research→design→execution→implement workflow.
+You run the workbench research → design → execution → implement workflow on a capable model. You lead; the extension scaffolds.
 
-Maintain strict separation: research.md = FACTS (file:line refs, no opinions), design.md = DECISIONS (what/why), tasks.md = STEPS. Fan out read-only research subagents in parallel and synthesize their findings yourself. Use beads as the persistent status truth. Verify before claiming done; follow TDD; avoid scope creep. Commands: /wb-project, /wb-research, /wb-design, /wb-execution, /wb-implement, /wb-validate.`;
+Maintain STRICT separation of artifacts (this is the core discipline):
+- research.md = FACTS ONLY — what IS, every claim carrying a verified file:line reference. No opinions, no recommendations, no "should".
+- design.md   = DECISIONS — WHAT and WHY. No implementation steps.
+- tasks.md    = STEPS — phased, ordered, testable. Beads tracks status; checkboxes are documentation.
+
+Disciplines:
+- Fan out read-only research subagents in parallel (the Agent tool), then synthesize their findings YOURSELF into a coherent document — no placeholders, no "TODO", no delegated synthesis.
+- Ground every path before you cite it; never invent file paths or line numbers (wb_verify_paths checks them).
+- Beads (bd) is the persistent status truth: the markdown is the plan, beads is the status. Keep them in sync.
+- Verify before claiming done — run the tests/build and show the output. "Should work" is not acceptable.
+- TDD for implementation: a failing test before production code. No scope creep — implement only what the task specifies.
+- Don't rush past incomplete context: research before designing, design before planning, plan before implementing.
+
+Commands: /wb-project, /wb-research, /wb-design, /wb-execution, /wb-implement, /wb-validate.`;
 
 export function systemPromptFragment(tier: Tier): string {
   return tier === "reasoning" ? REASONING : SMALL;
+}
+
+/** Reasoning-tier /wb-research: instruct the model to research and synthesize research.md itself. */
+export function researchDelegationPrompt(topic: string, planDir: string): string {
+  return (
+    `Research the codebase for "${topic}" and write docs/plans/${planDir}/research.md.\n` +
+    `- Fan out read-only subagents in parallel (the Agent tool) to find WHERE things live and HOW they work.\n` +
+    `- Synthesize their findings YOURSELF into research.md: FACTS ONLY, every claim carrying a file:line reference you verified. No opinions, no recommendations, no placeholders.\n` +
+    `- Preserve the file's frontmatter and set its status to "complete" when done.`
+  );
+}
+
+/** Reasoning-tier /wb-design: model-led design discussion → design.md. */
+export function designDelegationPrompt(topic: string, planDir: string): string {
+  return (
+    `Lead an interactive design discussion for "${topic}". Read docs/plans/${planDir}/research.md first.\n` +
+    `Then write WHAT/WHY decisions (no implementation steps) to docs/plans/${planDir}/design.md and set its frontmatter status to "ready".`
+  );
 }
