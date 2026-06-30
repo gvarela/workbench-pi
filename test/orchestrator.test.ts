@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody } from "../src/orchestrator.ts";
+import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, stripLeadingHeading } from "../src/orchestrator.ts";
+
+test("stripLeadingHeading drops a redundant leading H2 from agent output", () => {
+  assert.equal(stripLeadingHeading("\n## Locations for: x\n- a\n- b\n"), "- a\n- b");
+  assert.equal(stripLeadingHeading("- a\n- b"), "- a\n- b");
+  assert.equal(stripLeadingHeading(""), "");
+});
+
+test("assembleResearchBody does not stack two headings per section", () => {
+  const body = assembleResearchBody("x", [{ heading: "Locations (wb-locator)", body: "## Locations for: x\n- `a.ts`" }]);
+  // exactly one heading line mentioning Locations, immediately followed by the bullet
+  assert.match(body, /## Locations \(wb-locator\)\n\n- `a\.ts`/);
+  assert.doesNotMatch(body, /## Locations for: x/);
+});
 
 test("pickPlanDir returns the latest date-prefixed dir by default", () => {
   const dirs = ["2026-06-01-alpha", "2026-06-29-ENG-1-demo", "2026-06-15-beta"];
