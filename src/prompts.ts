@@ -1,12 +1,12 @@
 /**
  * Tier-aware prompting.
  *
- * small     — terse, imperative; names the deterministic commands and the hard
- *             rules. The model is a slot-filler; the extension owns control flow.
- * reasoning — restores the workbench's model-led framing and full disciplines for
- *             a capable model. The model leads; the extension scaffolds.
+ * small   — terse, imperative; names the deterministic commands and the hard
+ *           rules. The model is a slot-filler; the extension owns control flow.
+ * capable — restores the workbench's model-led framing and full disciplines for a
+ *           capable model. The model leads; the extension scaffolds.
  *
- * The reasoning-tier commands that delegate to the model (research, design) build
+ * The capable-tier commands that delegate to the model (research, design) build
  * their instruction text from the pure builders below so they're unit-testable.
  */
 
@@ -30,7 +30,7 @@ Hard rules (the discipline gates enforce these during /wb-implement; follow them
 - Stay in scope: implement only what the current task/plan specifies.
 Keep outputs short and structured. Fill the templates; don't editorialize.`;
 
-const REASONING = `## workbench-pi (tier: reasoning)
+const CAPABLE = `## workbench-pi (tier: capable)
 You run the workbench research → design → execution → implement workflow on a capable model. You lead; the extension scaffolds.
 
 Maintain STRICT separation of artifacts (this is the core discipline):
@@ -49,10 +49,10 @@ Disciplines:
 Commands: /wb-project, /wb-research, /wb-design, /wb-execution, /wb-implement, /wb-validate.`;
 
 export function systemPromptFragment(tier: Tier): string {
-  return tier === "reasoning" ? REASONING : SMALL;
+  return tier === "capable" ? CAPABLE : SMALL;
 }
 
-/** Reasoning-tier /wb-research: instruct the model to research and synthesize research.md itself. */
+/** Capable-tier /wb-research: instruct the model to research and synthesize research.md itself. */
 export function researchDelegationPrompt(topic: string, planDir: string): string {
   return (
     `Research the codebase for "${topic}" and write docs/plans/${planDir}/research.md.\n` +
@@ -62,7 +62,7 @@ export function researchDelegationPrompt(topic: string, planDir: string): string
   );
 }
 
-/** Reasoning-tier /wb-design: model-led design discussion → design.md. */
+/** Capable-tier /wb-design: model-led design discussion → design.md. */
 export function designDelegationPrompt(topic: string, planDir: string): string {
   return (
     `Lead an interactive design discussion for "${topic}". Read docs/plans/${planDir}/research.md first.\n` +

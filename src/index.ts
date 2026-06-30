@@ -1,7 +1,7 @@
 /**
  * workbench-pi — a Pi port of the workbench research→design→execution→implement
  * workflow, tuned for small local models (qwen3.6:35b) with a tier switch up to
- * reasoning models.
+ * capable models.
  *
  * Phase 0: skeleton. Registers a help command, a ping tool, and a tier-aware
  * system-prompt banner so we can verify the extension loads and wires into Pi.
@@ -68,7 +68,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
     name: "wb_ping",
     label: "Workbench Ping",
     description:
-      "Health check for the workbench-pi extension. Returns the extension version and the active tier (small | reasoning). Use only when explicitly asked to verify workbench-pi is loaded.",
+      "Health check for the workbench-pi extension. Returns the extension version and the active tier (small | capable). Use only when explicitly asked to verify workbench-pi is loaded.",
     parameters: Type.Object({}),
     async execute() {
       return {
@@ -148,8 +148,8 @@ export default function workbenchPi(pi: ExtensionAPI) {
         ctx.ui.notify("No plan found under docs/plans/. Run /wb-project first.", "warning");
         return;
       }
-      // Reasoning tier: the capable model researches and synthesizes research.md itself.
-      if (resolveTier(ctx.model?.id) === "reasoning") {
+      // Capable tier: the model researches and synthesizes research.md itself.
+      if (resolveTier(ctx.model?.id) === "capable") {
         pi.sendUserMessage(researchDelegationPrompt(topic, planDir));
         return;
       }
@@ -198,7 +198,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("wb-design", {
-    description: "Draft design.md for a topic (small: gather context + decisions checklist; reasoning: model-led)",
+    description: "Draft design.md for a topic (small: gather context + decisions checklist; capable: model-led)",
     handler: async (args, ctx) => {
       const topic = (args ?? "").trim();
       if (!topic) {
@@ -212,7 +212,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
       }
       const designPath = join(plansRootOf(ctx.cwd), planDir, "design.md");
 
-      if (resolveTier(ctx.model?.id) === "reasoning") {
+      if (resolveTier(ctx.model?.id) === "capable") {
         pi.sendUserMessage(designDelegationPrompt(topic, planDir));
         return;
       }

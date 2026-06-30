@@ -4,22 +4,22 @@ import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt 
 
 test("systemPromptFragment selects the tier-appropriate fragment", () => {
   const small = systemPromptFragment("small");
-  const reasoning = systemPromptFragment("reasoning");
+  const capable = systemPromptFragment("capable");
   assert.match(small, /tier: small/);
-  assert.match(reasoning, /tier: reasoning/);
-  // small tier states the hard rules; reasoning tier talks about parallel fan-out
+  assert.match(capable, /tier: capable/);
+  // small tier states the hard rules; capable tier talks about parallel fan-out
   assert.match(small, /failing test/);
-  assert.match(reasoning, /parallel/);
-  assert.notEqual(small, reasoning);
+  assert.match(capable, /parallel/);
+  assert.notEqual(small, capable);
 });
 
-test("reasoning fragment carries the load-bearing disciplines", () => {
-  const r = systemPromptFragment("reasoning");
-  assert.match(r, /FACTS ONLY/);
-  assert.match(r, /DECISIONS/);
-  assert.match(r, /synthesize their findings YOURSELF/i);
-  assert.match(r, /Verify before claiming done/i);
-  assert.match(r, /TDD/);
+test("capable fragment carries the load-bearing disciplines", () => {
+  const c = systemPromptFragment("capable");
+  assert.match(c, /FACTS ONLY/);
+  assert.match(c, /DECISIONS/);
+  assert.match(c, /synthesize their findings YOURSELF/i);
+  assert.match(c, /Verify before claiming done/i);
+  assert.match(c, /TDD/);
 });
 
 test("delegation prompts target the right artifact and disciplines", () => {

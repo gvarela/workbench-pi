@@ -3,7 +3,7 @@
 > A Pi (pi.dev) port of the **workbench** (`github.com/gvarela/workbench`, local
 > `../prompts`) research→design→execution→implement workflow, tuned to run on a
 > small local model (**qwen3.6:35b-mlx** via Ollama) with a **tier switch** that
-> scales the same workflow up to frontier reasoning models.
+> scales the same workflow up to capable frontier models.
 
 Status: **Phase 0 complete & verified.** This document is the durable source of
 truth for intent, architecture, decisions, and the build sequence. Keep it
@@ -27,8 +27,10 @@ markers as real stops). A 35B local model will not do those reliably.
 > *code*. Where the workbench trusts the model to *judge a discipline*, we
 > convert soft prompt-instructions into **hard, blocking code-gates**.
 
-A `model_tier` switch keeps one workflow that degrades gracefully: `reasoning`
-tier restores the rich, model-led behavior when a strong model is available.
+A `model_tier` switch keeps one workflow that degrades gracefully: the `capable`
+tier restores the rich, model-led behavior when a capable model is available.
+(The axis is model *capability*, not "reasoning" per se — Sonnet belongs on the
+capable tier; `reasoning`/`frontier`/`large` are accepted aliases for `capable`.)
 
 ---
 
@@ -134,7 +136,7 @@ workbench-pi/
   docs/PLAN.md                 # this file
   src/
     index.ts                   # factory: wires tools, commands, hooks; reads tier
-    tier.ts                    # WORKBENCH_TIER = small | reasoning  (the switch)
+    tier.ts                    # WORKBENCH_TIER = small | capable  (the switch)
     orchestrator.ts            # small-tier state machine: drives subagents step-by-step
     tools/
       scaffold-project.ts      # pure: create docs/plans/… tree + templated frontmatter
@@ -161,7 +163,7 @@ wrapper**. Pure cores get unit tests; wrappers get the integration smoke test.
 What actually differs by tier is **research/design** and **synthesis style**; the
 rest is invariant.
 
-| | `small` (default, qwen) | `reasoning` (Opus/Sonnet) |
+| | `small` (default, qwen) | `capable` (Opus/Sonnet/GLM-class/…) |
 |---|---|---|
 | `/wb-research`, `/wb-design` | extension-orchestrated: narrow agents + deterministic assembly / decisions checklist | model-led: the model fans out and synthesizes the artifact itself |
 | `/wb-execution`, `/wb-implement` | deterministic beads tree + verifier-gated close; subagents on qwen | **same flow**; subagents run on the stronger model |
@@ -203,7 +205,7 @@ Each phase ships with automatic validation runnable via `scripts/validate.sh`.
 | 3 | Small-tier **research orchestrator** (locator→analyzer→synthesize→research.md) | unit: state-machine transitions on mocked agent outputs; PoC run on qwen |
 | ✅ 4 | `beads` tool (deterministic ID capture) + `/wb-design`, `/wb-execution` | unit: tree planner + id parser + task-plan parse/assemble; **e2e verified** against real `bd` (caught & fixed a hyphenated-prefix id-parsing bug) |
 | ✅ 5 | Discipline gates + escape hatch + coordinated `/wb-implement` + `/wb-validate` | unit: gate predicates (claim/write/verify-cmd), ready-issue + verdict parsing. Gates scoped to /wb-implement; **primary gate is structural** (bead closes only on verifier PASS). **`/wb-implement` verified e2e** in a sandbox repo: TDD worker wrote a failing test → impl → pass, verifier returned PASS, bead auto-closed. |
-| ✅ 6 | Reasoning-tier rich prompts behind the switch + README | rich REASONING system prompt + model-led `/wb-research` & `/wb-design` delegation (pure builders, unit-tested); `/wb-execution` & `/wb-implement` keep deterministic tree + verifier but run subagents on the stronger model. Switch verified free (env path live on qwen; model-id path unit-tested). |
+| ✅ 6 | Capable-tier rich prompts behind the switch + README | rich CAPABLE system prompt + model-led `/wb-research` & `/wb-design` delegation (pure builders, unit-tested); `/wb-execution` & `/wb-implement` keep deterministic tree + verifier but run subagents on the stronger model. Tier renamed `reasoning`→`capable` (capability, not "reasoning"; aliases kept). Switch verified free (env path live on qwen; model-id path unit-tested). |
 
 Checkpoint cadence: proceed autonomously; **hard stop at Phase 3** (the qwen
 proof-of-concept) for human review.
