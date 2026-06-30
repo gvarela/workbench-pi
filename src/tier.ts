@@ -3,10 +3,17 @@
  * model's own judgment versus deterministic, extension-owned control flow.
  *
  *   "small"     (default) — qwen3.6:35b-class local models. The extension owns
- *               control flow: narrow single-purpose subagents, hard discipline
- *               gates, path grounding, templated fill-in-the-blank output.
- *   "reasoning" — frontier reasoning models (Opus/Sonnet). Rich prompts, parallel
- *               fan-out, soft barriers, model-led synthesis.
+ *               control flow: narrow single-purpose subagents, deterministic
+ *               assembly, path grounding, templated fill-in-the-blank output.
+ *   "reasoning" — frontier reasoning models (Opus/Sonnet). /wb-research and
+ *               /wb-design become model-led (the model fans out and synthesizes
+ *               the artifact itself); /wb-execution and /wb-implement keep the
+ *               deterministic beads tree + verifier but run subagents on the
+ *               stronger model.
+ *
+ * Invariant across tiers (NOT tier-dependent): path grounding, deterministic
+ * beads id capture, and the discipline gates (which arm during /wb-implement and
+ * are bypassable with /wb-override).
  *
  * Resolution order (first match wins):
  *   1. env WORKBENCH_TIER

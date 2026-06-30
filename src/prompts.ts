@@ -23,7 +23,7 @@ Pipeline (each writes ONE artifact, consumed by the next):
 - /wb-implement — coordinated TDD workers, one task at a time
 - /wb-validate  — verify against the plan
 
-Hard rules (enforced by gates):
+Hard rules (the discipline gates enforce these during /wb-implement; follow them always):
 - Never claim "done/fixed/passing" without running a verification command and showing its output.
 - No production code before a failing test exists (Red→Green→Refactor).
 - Never reference a file path you have not confirmed exists. Ground paths with the workbench path tool.

@@ -158,13 +158,21 @@ wrapper**. Pure cores get unit tests; wrappers get the integration smoke test.
 
 ### Two tiers, one workflow
 
+What actually differs by tier is **research/design** and **synthesis style**; the
+rest is invariant.
+
 | | `small` (default, qwen) | `reasoning` (Opus/Sonnet) |
 |---|---|---|
-| Control flow | extension orchestrator owns it | model-led, parallel fan-out |
-| Subagents | one narrow agent at a time, grounded inputs | parallel, broad prompts |
-| Disciplines | hard blocking gates | soft prompt instructions |
-| Output | strict fill-in-the-blank templates | model-authored synthesis |
-| Barriers | enforced in code | prompt markers |
+| `/wb-research`, `/wb-design` | extension-orchestrated: narrow agents + deterministic assembly / decisions checklist | model-led: the model fans out and synthesizes the artifact itself |
+| `/wb-execution`, `/wb-implement` | deterministic beads tree + verifier-gated close; subagents on qwen | **same flow**; subagents run on the stronger model |
+| System prompt | terse, imperative, slot-filler | rich workbench disciplines |
+| Output (research/design) | templated / assembled | model-authored synthesis |
+
+**Invariant across both tiers** (not tier-dependent): path grounding
+(`wb_verify_paths`), deterministic beads id capture, and the discipline gates —
+which arm during `/wb-implement` (on either tier) and are bypassable with
+`/wb-override`. The primary implement-time gate is structural (a bead closes only
+on a verifier PASS); the hook-gates are a backstop.
 
 Tier resolution (`src/tier.ts`): `WORKBENCH_TIER` env → model-id heuristic →
 default `small`.
