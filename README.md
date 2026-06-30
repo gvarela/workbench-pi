@@ -1,0 +1,41 @@
+# workbench-pi
+
+A [Pi](https://pi.dev) port of the [workbench](https://github.com/gvarela/workbench)
+research → design → execution → implement workflow, tuned to run on a **small local
+model** (`qwen3.6:35b-mlx` via Ollama) with a **tier switch** that scales the same
+workflow up to frontier reasoning models.
+
+Core idea: on the `small` tier the **extension owns control flow** (narrow
+single-purpose subagents, deterministic assembly, hard discipline gates,
+path-grounding) and the model only fills slots. On the `reasoning` tier the
+model-led workbench behavior is restored.
+
+See **[docs/PLAN.md](docs/PLAN.md)** for the full design, decisions, and build status.
+
+## Install (git)
+
+```bash
+pi install git:github.com/gvarela/workbench-pi
+pi   # then run /wb-setup once to register the subagents
+```
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `/wb-setup` | Install the workbench subagents into `~/.pi/agent/agents/` |
+| `/wb-project [TICKET-123] <name>` | Scaffold `docs/plans/<date-name>/` (research / design / tasks) |
+| `/wb-research <topic>` | Orchestrated subagents → `research.md` (facts only) |
+| `/wb-design`, `/wb-execution`, `/wb-implement`, `/wb-validate` | (in progress) |
+
+Tools: `wb_verify_paths` (ground paths vs `git ls-files`), `wb_ping`.
+
+## Develop
+
+```bash
+npm run validate           # syntax + unit tests (fast)
+./scripts/validate.sh --smoke   # also load in Pi + round-trip a tool (needs pi + Ollama)
+```
+
+Validation routes through `scripts/run-silent.sh` — context-efficient backpressure
+("Success = ✓. Failure = full output.").

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.pi/npm/
+.pi/git/
+.DS_Store
+
+# Dogfood/demo + runtime output. In a target repo this lives in the user's project,
+# never in the workbench-pi package itself.
+docs/plans/

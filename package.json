@@ -1,0 +1,48 @@
+{
+  "name": "workbench-pi",
+  "version": "0.0.1",
+  "description": "A Pi port of the workbench research→design→execution→implement workflow, tuned for small local models (qwen3.6:35b) with a tier switch up to reasoning models.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "workbench",
+    "agent-workflow",
+    "tdd",
+    "beads"
+  ],
+  "files": [
+    "src",
+    "agents",
+    "skills",
+    "prompts",
+    "README.md",
+    "LICENSE",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/**/*.test.ts'",
+    "validate": "bash scripts/validate.sh"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@types/node": "^22.15.18",
+    "typescript": "^5.8.3"
+  }
+}
