@@ -59,6 +59,33 @@ export function assembleResearchBody(topic: string, sections: ResearchSection[])
 }
 
 /**
+ * Compose a design.md DRAFT for the small tier: gathered context from research
+ * agents, followed by an explicit decisions checklist the human fills in. Design
+ * judgment stays with the human; the extension only assembles context + prompts.
+ */
+export function assembleDesignDraft(topic: string, sections: ResearchSection[]): string {
+  const parts = [
+    `# Design: ${topic}`,
+    "",
+    "> DECISIONS (WHAT / WHY). Draft — gathered context below; you make the calls in Decisions.",
+    "",
+    "## Decisions (fill in)",
+    "",
+    "- [ ] **What** are we building? (one paragraph)",
+    "- [ ] **Why** this approach over alternatives?",
+    "- [ ] **Alternatives** considered and rejected (and why)?",
+    "- [ ] **Risks / unknowns** and how we'll handle them?",
+    "- [ ] **Out of scope** (explicitly)?",
+    "",
+  ];
+  for (const s of sections) {
+    parts.push(`## Context: ${s.heading}`, "", stripLeadingHeading(s.body) || "_(no findings)_", "");
+  }
+  parts.push("---", "_Scaffolded by `/wb-design` (tier: small). Fill the Decisions, then `/wb-execution`._");
+  return parts.join("\n") + "\n";
+}
+
+/**
  * Replace a markdown file's body while preserving its YAML frontmatter, flipping
  * only the `status:` line. If there is no frontmatter, returns just the new body.
  */

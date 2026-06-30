@@ -19,7 +19,9 @@ import { systemPromptFragment } from "./prompts.js";
 import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
 import { groundPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
-import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody } from "./orchestrator.js";
+import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft } from "./orchestrator.js";
+import { parseTaskPlan, assembleTasksBody } from "./execution.js";
+import { planBeadsTree, createBeadsTree } from "./tools/beads.js";
 
 /** Minimal view of the @tintinweb/pi-subagents manager exposed via globalThis. */
 interface SubagentManager {
@@ -40,6 +42,17 @@ function isoDate(): string {
 
 export default function workbenchPi(pi: ExtensionAPI) {
   let tier: Tier = resolveTier();
+
+  const plansRootOf = (cwd: string) => join(cwd, "docs", "plans");
+  const findPlanDir = (cwd: string): string | undefined => {
+    const root = plansRootOf(cwd);
+    return pickPlanDir(existsSync(root) ? readdirSync(root) : []);
+  };
+  const runAgent = async (mgr: SubagentManager, ctx: unknown, type: string, prompt: string, desc: string): Promise<string> => {
+    const id = mgr.spawn(pi, ctx, type, prompt, { description: desc });
+    await mgr.waitForAll();
+    return mgr.getRecord(id)?.result ?? "";
+  };
 
   pi.registerTool({
     name: "wb_ping",
@@ -165,6 +178,121 @@ export default function workbenchPi(pi: ExtensionAPI) {
       } catch (e) {
         setStatus(undefined);
         ctx.ui.notify(`wb-research failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("wb-design", {
+    description: "Draft design.md for a topic (small: gather context + decisions checklist; reasoning: model-led)",
+    handler: async (args, ctx) => {
+      const topic = (args ?? "").trim();
+      if (!topic) {
+        ctx.ui.notify("Usage: /wb-design <topic>", "warning");
+        return;
+      }
+      const planDir = findPlanDir(ctx.cwd);
+      if (!planDir) {
+        ctx.ui.notify("No plan found under docs/plans/. Run /wb-project first.", "warning");
+        return;
+      }
+      const designPath = join(plansRootOf(ctx.cwd), planDir, "design.md");
+
+      if (resolveTier(ctx.model?.id) === "reasoning") {
+        pi.sendUserMessage(
+          `Lead an interactive design discussion for "${topic}". Read docs/plans/${planDir}/research.md first. ` +
+            `Then write WHAT/WHY decisions (no implementation steps) to docs/plans/${planDir}/design.md and set its frontmatter status to "ready".`,
+        );
+        return;
+      }
+
+      const mgr = subagentManager();
+      if (!mgr) {
+        ctx.ui.notify("wb-design (small tier) needs @tintinweb/pi-subagents + /wb-setup.", "error");
+        return;
+      }
+      const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-design", s);
+      try {
+        setStatus("gathering context…");
+        const pattern = await runAgent(mgr, ctx, "wb-pattern", `Concept: ${topic}\nFind existing patterns/conventions relevant to designing this.`, `design ctx: ${topic}`);
+        const analyzer = await runAgent(mgr, ctx, "wb-analyzer", `Topic: ${topic}\nExplain how the most relevant existing code works (constraints a design must respect).`, `design ctx: ${topic}`);
+        const body = assembleDesignDraft(topic, [
+          { heading: "Existing patterns (wb-pattern)", body: pattern },
+          { heading: "How relevant code works (wb-analyzer)", body: analyzer },
+        ]);
+        const existing = existsSync(designPath) ? readFileSync(designPath, "utf-8") : "";
+        writeFileSync(designPath, setStatusAndReplaceBody(existing, "draft", body), "utf-8");
+        setStatus(undefined);
+        ctx.ui.notify(`design.md draft → docs/plans/${planDir}/design.md. Fill the Decisions, then /wb-execution.`, "info");
+      } catch (e) {
+        setStatus(undefined);
+        ctx.ui.notify(`wb-design failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+      }
+    },
+  });
+
+  pi.registerCommand("wb-execution", {
+    description: "Plan phased tasks from design.md and create the beads issue tree",
+    handler: async (args, ctx) => {
+      const mgr = subagentManager();
+      if (!mgr) {
+        ctx.ui.notify("wb-execution needs @tintinweb/pi-subagents + /wb-setup.", "error");
+        return;
+      }
+      const planDir = findPlanDir(ctx.cwd);
+      if (!planDir) {
+        ctx.ui.notify("No plan found under docs/plans/. Run /wb-project first.", "warning");
+        return;
+      }
+      const bd = async (a: string[]) => pi.exec("bd", a, { cwd: ctx.cwd, timeout: 10_000 }).catch(() => ({ code: 1, stdout: "", stderr: "bd not found", killed: false }));
+      if ((await bd(["version"])).code !== 0) {
+        ctx.ui.notify("beads CLI (bd) not found. Install bd to use /wb-execution.", "error");
+        return;
+      }
+      if ((await bd(["where"])).code !== 0) {
+        ctx.ui.notify("beads not initialized here. Run `bd init` (or /beads:init) first.", "warning");
+        return;
+      }
+
+      const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-execution", s);
+      try {
+        setStatus("planning tasks…");
+        const planMd = await runAgent(mgr, ctx, "wb-planner",
+          `Plan directory: docs/plans/${planDir}. Read its design.md and research.md, then produce the phased task plan.`,
+          "plan tasks");
+        const phases = parseTaskPlan(planMd);
+        if (phases.length === 0) {
+          setStatus(undefined);
+          ctx.ui.notify("Planner produced no tasks — is design.md filled in?", "warning");
+          return;
+        }
+        const epicTitle = (args ?? "").trim() || planDir;
+
+        if (ctx.hasUI) {
+          const summary = phases.map((p, i) => `Phase ${i + 1}: ${p.name} (${p.tasks.length} tasks)`).join("\n");
+          const choice = await ctx.ui.select(`Create beads epic "${epicTitle}"?\n${summary}`, ["Create", "Cancel"]);
+          if (choice !== "Create") {
+            setStatus(undefined);
+            ctx.ui.notify("wb-execution cancelled.", "info");
+            return;
+          }
+        }
+
+        setStatus("creating beads issues…");
+        const plan = planBeadsTree(epicTitle, phases);
+        const res = await createBeadsTree(pi, ctx.cwd, plan, ctx.signal);
+
+        const tasksPath = join(plansRootOf(ctx.cwd), planDir, "tasks.md");
+        const existing = existsSync(tasksPath) ? readFileSync(tasksPath, "utf-8") : "";
+        writeFileSync(tasksPath, setStatusAndReplaceBody(existing, "in-progress", assembleTasksBody(epicTitle, phases, res.refToId)), "utf-8");
+        await bd(["sync"]);
+        setStatus(undefined);
+
+        const issueCount = Object.keys(res.refToId).length - 1;
+        const errNote = res.errors.length ? ` — ${res.errors.length} error(s): ${res.errors[0]}` : "";
+        ctx.ui.notify(`Epic ${res.epicId || "(none)"} + ${issueCount} issues; tasks.md written${errNote}.`, res.errors.length ? "warning" : "info");
+      } catch (e) {
+        setStatus(undefined);
+        ctx.ui.notify(`wb-execution failed: ${e instanceof Error ? e.message : String(e)}`, "error");
       }
     },
   });

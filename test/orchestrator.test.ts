@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, stripLeadingHeading } from "../src/orchestrator.ts";
+import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, stripLeadingHeading, assembleDesignDraft } from "../src/orchestrator.ts";
+
+test("assembleDesignDraft scaffolds a decisions checklist plus gathered context", () => {
+  const out = assembleDesignDraft("caching", [{ heading: "Existing patterns (wb-pattern)", body: "## Existing patterns\n- `cache.ts`" }]);
+  assert.match(out, /# Design: caching/);
+  assert.match(out, /## Decisions \(fill in\)/);
+  assert.match(out, /\*\*Why\*\* this approach/);
+  assert.match(out, /## Context: Existing patterns \(wb-pattern\)/);
+  assert.match(out, /cache\.ts/);
+  assert.doesNotMatch(out, /## Existing patterns\n/); // agent's own heading stripped
+});
 
 test("stripLeadingHeading drops a redundant leading H2 from agent output", () => {
   assert.equal(stripLeadingHeading("\n## Locations for: x\n- a\n- b\n"), "- a\n- b");
