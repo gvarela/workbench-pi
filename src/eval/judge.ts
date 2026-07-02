@@ -7,13 +7,11 @@
  * (capable-model, opt-in, cached) call lives in the runner.
  */
 
-// `as`-cast rather than a `: Record<…>` annotation: `node --check` (the validate
-// syntax gate) can't strip a generic annotation on a const, but strips casts fine.
-const RUBRICS = {
+const RUBRICS: Record<string, string[]> = {
   research: ["accuracy", "completeness", "usefulness"],
   design: ["addresses_research", "decision_clarity", "scoping"],
   tasks: ["ordering", "granularity", "testability"],
-} as Record<string, string[]>;
+};
 
 export function judgeDimensions(artifactType: string): string[] {
   return RUBRICS[artifactType] ?? ["quality"];
@@ -54,7 +52,7 @@ export function parseJudgeVerdict(text: string): JudgeVerdict | null {
   if (!obj || typeof obj !== "object") return null;
   const dimsRaw = (obj as Record<string, unknown>).dimensions;
   if (!dimsRaw || typeof dimsRaw !== "object") return null;
-  const dimensions = {} as Record<string, number>;
+  const dimensions: Record<string, number> = {};
   for (const [k, v] of Object.entries(dimsRaw as Record<string, unknown>)) {
     if (typeof v === "number" && Number.isFinite(v)) dimensions[k] = Math.max(0, Math.min(1, v));
   }

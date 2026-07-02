@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 RS="bash scripts/run-silent.sh"
 NODE="node --disable-warning=ExperimentalWarning"
 
-$RS "syntax-check src/*.ts" bash -c "set -e; for f in \$(find src -name '*.ts'); do $NODE --check \"\$f\"; done" || exit 1
+$RS "syntax-check src/*.ts" bash -c "$NODE scripts/tscheck.mjs \$(find src -name '*.ts')" || exit 1
 
 $RS "unit tests (node:test)" $NODE --test 'test/**/*.test.ts' || exit 1
 
