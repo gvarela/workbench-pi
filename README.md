@@ -28,7 +28,7 @@ pi   # then run /wb-setup once to register the subagents
 | `/wb-research <topic>` | Orchestrated subagents → `research.md` (facts only) |
 | `/wb-design <topic>` | Draft `design.md` (small tier: gathered context + decisions checklist for you; capable tier: model-led) |
 | `/wb-execution [epic title]` | `wb-planner` → phased tasks → deterministic beads issue tree → `tasks.md` (ids captured in code) |
-| `/wb-implement [n]` | Work the next `n` ready beads tasks with fresh-context TDD workers; each closes only if `wb-verifier` independently passes (one retry on fail) |
+| `/wb-implement [n]` | **Loop-until-dry**: work ready beads tasks with fresh-context TDD workers, re-querying `bd ready` each iteration (picks up newly-unblocked tasks); each closes only on an independent `wb-verifier` PASS (one retry on fail). `[n]` caps the task count. |
 | `/wb-validate` | Run the suite + verifier against the plan; writes `validation.md` |
 | `/wb-override` | Escape hatch: toggle the discipline gates off/on for the session |
 

@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseReadyIssues, parseVerdict } from "../src/implement.ts";
+import { parseReadyIssues, parseVerdict, selectNextReady } from "../src/implement.ts";
+
+test("selectNextReady returns the first not-yet-attempted task, or undefined when dry", () => {
+  const issues = [{ id: "a-1", title: "x" }, { id: "a-2", title: "y" }];
+  assert.deepEqual(selectNextReady(issues, new Set()), { id: "a-1", title: "x" });
+  assert.deepEqual(selectNextReady(issues, new Set(["a-1"])), { id: "a-2", title: "y" });
+  assert.equal(selectNextReady(issues, new Set(["a-1", "a-2"])), undefined); // all attempted → dry
+  assert.equal(selectNextReady([], new Set()), undefined);
+});
 
 test("parseReadyIssues handles a JSON array and {issues:[]}, picking id+title", () => {
   assert.deepEqual(parseReadyIssues('[{"id":"a-1","title":"Do X"},{"id":"a-2","summary":"Do Y"}]'), [

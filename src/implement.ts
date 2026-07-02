@@ -38,6 +38,16 @@ export function parseReadyIssues(stdout: string): ReadyIssue[] {
   return out;
 }
 
+/**
+ * Pick the next ready task to work, skipping ones already attempted this run. The
+ * coordinator re-queries `bd ready` each iteration (loop-until-dry, so newly
+ * unblocked tasks get picked up); `attempted` prevents re-attempting a task that
+ * failed and stayed ready, which would otherwise loop forever.
+ */
+export function selectNextReady(issues: ReadyIssue[], attempted: Set<string>): ReadyIssue | undefined {
+  return issues.find((i) => !attempted.has(i.id));
+}
+
 /** Read the verifier's verdict; the "Verdict" section is authoritative, FAIL wins. */
 export function parseVerdict(text: string): Verdict {
   const idx = text.toLowerCase().lastIndexOf("verdict");

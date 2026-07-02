@@ -23,7 +23,7 @@ import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDes
 import { parseTaskPlan, assembleTasksBody } from "./execution.js";
 import { planBeadsTree, createBeadsTree } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
-import { parseReadyIssues, parseVerdict } from "./implement.js";
+import { parseReadyIssues, parseVerdict, selectNextReady } from "./implement.js";
 
 /** Minimal view of the @tintinweb/pi-subagents manager exposed via globalThis. */
 interface SubagentManager {
@@ -319,7 +319,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("wb-implement", {
-    description: "Work ready beads tasks via fresh-context TDD workers, gated by an independent verifier",
+    description: "Loop-until-dry: work ready beads tasks via fresh-context TDD workers, verifier-gated. Arg [n] caps task count.",
     handler: async (args, ctx) => {
       const mgr = subagentManager();
       if (!mgr) {
@@ -335,14 +335,14 @@ export default function workbenchPi(pi: ExtensionAPI) {
         ctx.ui.notify("beads not initialized here. Run `bd init` first.", "warning");
         return;
       }
-      const ready = parseReadyIssues((await bd(["ready", "--json"])).stdout);
-      if (ready.length === 0) {
+      const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-implement", s);
+      if (parseReadyIssues((await bd(["ready", "--json"])).stdout).length === 0) {
         ctx.ui.notify("No ready tasks. Run /wb-execution first (or all tasks are done/blocked).", "info");
         return;
       }
-      const limit = Math.max(1, Number.parseInt((args ?? "").trim(), 10) || 1);
-      const batch = ready.slice(0, limit);
-      const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-implement", s);
+      // [n] caps the task count; default is loop-until-dry (bounded by a safety cap).
+      const maxTasks = Number.parseInt((args ?? "").trim(), 10) || Number.POSITIVE_INFINITY;
+      const HARD_CAP = 100;
 
       // structural gate: a task closes only if the verifier independently returns PASS.
       const attempt = async (task: { id: string; title: string }, feedback?: string) => {
@@ -357,10 +357,17 @@ export default function workbenchPi(pi: ExtensionAPI) {
       };
 
       implementMode = true;
+      const attempted = new Set<string>();
       const results: string[] = [];
       try {
-        for (const task of batch) {
-          setStatus(`implement ${task.id}…`);
+        // Ralph loop (code-driven): re-query bd ready each iteration so tasks unblocked
+        // by a close get picked up; `attempted` stops a failed-but-still-ready task from
+        // looping forever; HARD_CAP is the runaway backstop.
+        while (results.length < maxTasks && attempted.size < HARD_CAP) {
+          const task = selectNextReady(parseReadyIssues((await bd(["ready", "--json"])).stdout), attempted);
+          if (!task) break; // dry — no ready work left
+          attempted.add(task.id);
+          setStatus(`implement ${task.id} (#${results.length + 1})…`);
           await bd(["update", task.id, "--status", "in_progress"]);
           let { verify, verdict } = await attempt(task);
           if (verdict !== "PASS") {
@@ -380,7 +387,8 @@ export default function workbenchPi(pi: ExtensionAPI) {
         implementMode = false;
         setStatus(undefined);
       }
-      ctx.ui.notify(`wb-implement: ${results.join("  ")}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
+      const summary = results.length ? results.join("  ") : "no tasks processed";
+      ctx.ui.notify(`wb-implement (${results.length}): ${summary}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
     },
   });
 
