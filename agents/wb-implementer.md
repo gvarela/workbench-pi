@@ -3,7 +3,7 @@ description: Implement ONE task via strict TDD (failing test → minimal code �
 display_name: wb-implementer
 tools: read, write, edit, bash, grep, find, ls
 thinking: off
-max_turns: 30
+max_turns: 50
 prompt_mode: replace
 ---
 You implement exactly ONE task using strict TDD. Your context is fresh — the task you are given is all you know. Do not assume prior conversation.
