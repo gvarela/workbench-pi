@@ -17,9 +17,9 @@ import { Type } from "@sinclair/typebox";
 import { resolveTier, type Tier } from "./tier.js";
 import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt } from "./prompts.js";
 import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
-import { groundPaths } from "./tools/verify-paths.js";
+import { groundPaths, extractCitedPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
-import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft } from "./orchestrator.js";
+import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft, annotateUngrounded } from "./orchestrator.js";
 import { parseTaskPlan, assembleTasksBody } from "./execution.js";
 import { planBeadsTree, createBeadsTree } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
@@ -63,6 +63,18 @@ export default function workbenchPi(pi: ExtensionAPI) {
     await mgr.waitForAll();
     return mgr.getRecord(id)?.result ?? "";
   };
+  // Real repo paths: tracked + untracked-visible. Used for path grounding/validation.
+  const gitUniverse = async (cwd: string, signal?: AbortSignal): Promise<string[]> => {
+    const read = async (args: string[]) => {
+      try {
+        const r = await pi.exec("git", args, { cwd, signal, timeout: 10_000 });
+        return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    };
+    return [...(await read(["ls-files"])), ...(await read(["ls-files", "--others", "--exclude-standard"]))];
+  };
 
   pi.registerTool({
     name: "wb_ping",
@@ -89,18 +101,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
       paths: Type.Array(Type.String(), { description: "Proposed repo-relative paths to verify" }),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
-      const read = async (args: string[]) => {
-        try {
-          const r = await pi.exec("git", args, { cwd: ctx.cwd, signal, timeout: 10_000 });
-          return r.code === 0 ? r.stdout.split("\n").filter(Boolean) : [];
-        } catch {
-          return [];
-        }
-      };
-      const universe = [
-        ...(await read(["ls-files"])),
-        ...(await read(["ls-files", "--others", "--exclude-standard"])),
-      ];
+      const universe = await gitUniverse(ctx.cwd, signal);
       const { real, missing } = groundPaths(params.paths, universe);
       const lines: string[] = [];
       if (real.length) lines.push(`REAL (${real.length}): ${real.join(", ")}`);
@@ -186,10 +187,18 @@ export default function workbenchPi(pi: ExtensionAPI) {
           { heading: "How it works (wb-analyzer)", body: analyzer },
           { heading: "Existing patterns (wb-pattern)", body: pattern },
         ]);
+
+        // In-pipeline validation: ground cited paths and flag hallucinations (qwen's #1 failure).
+        setStatus("validating citations…");
+        const { real, missing } = groundPaths(extractCitedPaths(body), await gitUniverse(ctx.cwd));
+        const validated = annotateUngrounded(body, missing.map((m) => m.path));
+
         const existing = existsSync(researchPath) ? readFileSync(researchPath, "utf-8") : "";
-        writeFileSync(researchPath, setStatusAndReplaceBody(existing, "in-progress", body), "utf-8");
+        writeFileSync(researchPath, setStatusAndReplaceBody(existing, "in-progress", validated), "utf-8");
         setStatus(undefined);
-        ctx.ui.notify(`research.md updated → docs/plans/${planDir}/research.md (review & refine).`, "info");
+        const cited = real.length + missing.length;
+        const note = cited ? ` ${real.length}/${cited} citations grounded${missing.length ? `, ${missing.length} flagged unverified` : ""}.` : "";
+        ctx.ui.notify(`research.md → docs/plans/${planDir}/research.md.${note} Review & refine.`, missing.length ? "warning" : "info");
       } catch (e) {
         setStatus(undefined);
         ctx.ui.notify(`wb-research failed: ${e instanceof Error ? e.message : String(e)}`, "error");

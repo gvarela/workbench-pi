@@ -19,6 +19,20 @@ export function normalizePath(p: string): string {
   return p.replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
+const PATH_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|md|json|sh|yml|yaml|toml|txt|css|html)$/i;
+
+/** Backticked tokens that look like file paths (have a slash or a known extension); :line/range stripped. */
+export function extractCitedPaths(md: string): string[] {
+  const out = new Set<string>();
+  for (const m of md.matchAll(/`([^`]+)`/g)) {
+    const raw = m[1].trim();
+    const path = raw.replace(/:\d+(?:[-–—]\d+)?$/, ""); // strip :line or :line-range (ascii/en/em dash)
+    if (/\s/.test(path)) continue;
+    if (path.includes("/") || PATH_EXT_RE.test(path)) out.add(path);
+  }
+  return [...out];
+}
+
 function stemKey(file: string): string {
   return basename(file)
     .replace(/\.[^.]+$/, "")

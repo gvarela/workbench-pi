@@ -8,28 +8,17 @@
  * scorecard costs nothing and is unit-testable.
  */
 
-import { groundPaths } from "../tools/verify-paths.ts";
+import { groundPaths, extractCitedPaths } from "../tools/verify-paths.ts";
 
-const PATH_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|md|json|sh|yml|yaml|toml|txt|css|html)$/i;
+// path parsing now lives with path grounding; re-export for existing importers.
+export { extractCitedPaths } from "../tools/verify-paths.ts";
+
 const OPINION_RE =
   /\b(should|shouldn'?t|recommend|recommended|i think|we could|we should|better to|it'?s best|best to|prefer to|ought to|in my opinion|ideally|consider (?:refactor|adding|using|moving))\b/gi;
 const PLACEHOLDER_RE = /(_\(no findings\)_|_Populate with|\bTODO\b|\bFIXME\b|\bXXX\b|\[fill in\])/gi;
 
 export interface DimScore {
   score: number;
-}
-
-/** Backticked tokens that look like file paths (have a slash or a known extension); :line stripped. */
-export function extractCitedPaths(md: string): string[] {
-  const out = new Set<string>();
-  for (const m of md.matchAll(/`([^`]+)`/g)) {
-    const raw = m[1].trim();
-    // strip a trailing :line or :line-range (ascii hyphen, en-dash, em-dash)
-    const path = raw.replace(/:\d+(?:[-–—]\d+)?$/, "");
-    if (/\s/.test(path)) continue; // tokens with spaces aren't paths
-    if (path.includes("/") || PATH_EXT_RE.test(path)) out.add(path);
-  }
-  return [...out];
 }
 
 export function scorePathGrounding(md: string, universe: string[]): DimScore & { cited: number; grounded: number } {

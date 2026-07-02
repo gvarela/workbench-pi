@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, stripLeadingHeading, assembleDesignDraft } from "../src/orchestrator.ts";
+import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, stripLeadingHeading, assembleDesignDraft, annotateUngrounded } from "../src/orchestrator.ts";
+
+test("annotateUngrounded flags hallucinated citations, no-ops when clean", () => {
+  assert.equal(annotateUngrounded("body text", []), "body text");
+  const out = annotateUngrounded("body text", ["src/nope.ts", "lib/missing.rb"]);
+  assert.match(out, /## ⚠️ Unverified citations/);
+  assert.match(out, /src\/nope\.ts/);
+  assert.match(out, /lib\/missing\.rb/);
+});
 
 test("assembleDesignDraft scaffolds a decisions checklist plus gathered context", () => {
   const out = assembleDesignDraft("caching", [{ heading: "Existing patterns (wb-pattern)", body: "## Existing patterns\n- `cache.ts`" }]);

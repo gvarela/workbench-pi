@@ -86,6 +86,26 @@ export function assembleDesignDraft(topic: string, sections: ResearchSection[]):
 }
 
 /**
+ * In-pipeline research validation: append a warning section listing cited paths that
+ * were not found in the repo (likely hallucinations). Deterministic port of the
+ * original workbench's post-write research-validator — path grounding is qwen's #1
+ * failure, so research must be checked, not trusted. No-op when everything grounds.
+ */
+export function annotateUngrounded(body: string, missing: string[]): string {
+  if (missing.length === 0) return body;
+  const lines = [
+    body.trimEnd(),
+    "",
+    "## ⚠️ Unverified citations",
+    "",
+    "These cited paths were NOT found in the repo and may be hallucinated — verify or remove:",
+    ...missing.map((p) => `- \`${p}\``),
+    "",
+  ];
+  return lines.join("\n") + "\n";
+}
+
+/**
  * Replace a markdown file's body while preserving its YAML frontmatter, flipping
  * only the `status:` line. If there is no frontmatter, returns just the new body.
  */
