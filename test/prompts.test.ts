@@ -1,6 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt } from "../src/prompts.ts";
+import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt, editFailureTip } from "../src/prompts.ts";
+
+test("SMALL fragment carries qwen-specific editing discipline; capable does not", () => {
+  const small = systemPromptFragment("small");
+  assert.match(small, /re-read/i);
+  assert.match(small, /anchor/i);
+  assert.match(small, /never reconstruct/i);
+  assert.match(small, /\bsed\b/);
+  // qwen-specific: the capable model doesn't need this hand-holding
+  assert.doesNotMatch(systemPromptFragment("capable"), /never reconstruct/i);
+});
+
+test("editFailureTip fires only for a small-tier edit failure", () => {
+  assert.match(editFailureTip("small", "edit", true) ?? "", /re-read/i);
+  assert.equal(editFailureTip("capable", "edit", true), undefined); // not for capable models
+  assert.equal(editFailureTip("small", "bash", true), undefined); // only edit
+  assert.equal(editFailureTip("small", "edit", false), undefined); // only on failure
+});
 
 test("systemPromptFragment selects the tier-appropriate fragment", () => {
   const small = systemPromptFragment("small");

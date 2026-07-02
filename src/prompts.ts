@@ -28,6 +28,13 @@ Hard rules (the discipline gates enforce these during /wb-implement; follow them
 - No production code before a failing test exists (Red→Green→Refactor).
 - Never reference a file path you have not confirmed exists. Ground paths with the workbench path tool.
 - Stay in scope: implement only what the current task/plan specifies.
+
+Editing files (edit fails when oldText doesn't match byte-for-byte):
+- Before edit, grep -n a short unique anchor phrase, then re-read that exact region with read (offset/limit). NEVER reconstruct file content from memory or from your own prior summary.
+- Keep oldText to a single line when possible.
+- On the first mismatch, STOP retrying blindly — shrink the anchor and re-read before trying again.
+- For pure line-based changes (e.g. toggling a checkbox), prefer sed with explicit line numbers over edit's exact match.
+
 Keep outputs short and structured. Fill the templates; don't editorialize.`;
 
 const CAPABLE = `## workbench-pi (tier: capable)
@@ -50,6 +57,21 @@ Commands: /wb-project, /wb-research, /wb-design, /wb-execution, /wb-implement, /
 
 export function systemPromptFragment(tier: Tier): string {
   return tier === "capable" ? CAPABLE : SMALL;
+}
+
+/**
+ * Corrective tip appended at the point of an edit failure — reinforcement exactly
+ * when it's needed, instead of repeating the rule every turn. Qwen-specific: only
+ * the small tier struggles with reconstructing-from-memory edits; capable models
+ * don't need it. Returns undefined unless (tier=small AND tool=edit AND it failed).
+ */
+export function editFailureTip(tier: Tier, toolName: string, isError: boolean): string | undefined {
+  if (tier !== "small" || toolName !== "edit" || !isError) return undefined;
+  return (
+    "workbench-pi: edit failed. Do NOT retry from memory — grep -n a short unique anchor, " +
+    "re-read that exact region with read (offset/limit), then edit with oldText copied verbatim " +
+    "(one line if possible). For line-based changes, use sed with explicit line numbers instead."
+  );
 }
 
 /** Capable-tier /wb-research: instruct the model to research and synthesize research.md itself. */

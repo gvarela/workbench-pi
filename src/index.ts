@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { resolveTier, type Tier } from "./tier.js";
-import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt } from "./prompts.js";
+import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt, editFailureTip } from "./prompts.js";
 import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
 import { groundPaths, extractCitedPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
@@ -482,6 +482,16 @@ export default function workbenchPi(pi: ExtensionAPI) {
   // --- Discipline gates (armed only during /wb-implement; /wb-override bypasses) ---
   pi.on("turn_start", async () => {
     verifiedThisTurn = false;
+  });
+
+  // Small-tier (qwen) reinforcement: on an edit failure, append a corrective tip at
+  // the point of failure — qwen tends to reconstruct file content from memory instead
+  // of re-reading. Not gated on implementMode (mis-edits happen any time); capable
+  // models are excluded inside editFailureTip.
+  pi.on("tool_result", async (event) => {
+    const tip = editFailureTip(tier, event.toolName, event.isError);
+    if (!tip) return;
+    return { content: [...event.content, { type: "text", text: `\n\n${tip}` }] };
   });
 
   // Observe verification runs so the gates know test state.
