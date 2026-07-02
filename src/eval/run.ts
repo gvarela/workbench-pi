@@ -47,7 +47,9 @@ function parseFlags(argv: string[]): Flags {
   return f;
 }
 
-function run(cmd: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv, timeoutMs = 600_000) {
+const PI_TIMEOUT_MS = (Number.parseInt(process.env.PI_RUN_TIMEOUT ?? "", 10) || 900) * 1000;
+
+function run(cmd: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv, timeoutMs = PI_TIMEOUT_MS) {
   return spawnSync(cmd, args, { cwd, encoding: "utf-8", timeout: timeoutMs, env: { ...process.env, ...env } });
 }
 
@@ -79,7 +81,9 @@ function prepareRepo(fx: Fixture): string {
 function pi(prompt: string, work: string, flags: Flags): void {
   const env: NodeJS.ProcessEnv = { WORKBENCH_TIER: flags.target };
   if (flags.variant) env.PI_CODING_AGENT_DIR = flags.variant;
-  run("pi", ["-e", EXT, "-nc", "--no-session", "-p", prompt], work, env);
+  // --approve: the scratch repo is freshly cloned and untrusted; without this Pi
+  // runs in a restricted mode that skips extensions/packages (no subagent manager).
+  run("pi", ["-e", EXT, "--approve", "-nc", "--no-session", "-p", prompt], work, env);
 }
 
 function judge(fx: Fixture, content: string, flags: Flags): JudgeVerdict | null {
@@ -118,7 +122,8 @@ function main() {
       const label = `${fx.name} [${flags.target}] run ${r}/${flags.runs}`;
       try {
         const work = prepareRepo(fx);
-        if (fx.bundle) run("bundle", ["install", "--quiet"], work, undefined, 600_000);
+        console.log(`  ${label}: work=${work}`);
+        if (fx.bundle) run("bundle", ["install", "--quiet"], work, undefined, 900_000);
         if (["wb-execution", "wb-implement"].includes(fx.command)) run("bd", ["init"], work);
         for (const s of fx.setup) pi(s, work, flags);
         pi(`/${fx.command} ${fx.args}`.trim(), work, flags);
