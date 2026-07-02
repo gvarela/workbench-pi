@@ -251,11 +251,25 @@ context small by construction and is a natural candidate to later expose as a Pi
 
 ---
 
-## 9. Future: execution eval harness (`evals/`)
+## 9. Execution eval harness
 
 Goal: **tune the small-tier prompts/orchestration and judge quality automatically.**
 
-Sketch:
+**Built (deterministic layer — free, no model):** `src/eval/scorers.ts` scores an
+artifact on path-grounding correctness (the central anti-hallucination metric,
+against on-disk truth), facts-only discipline (opinion-marker detection), template
+conformance, and leftover-placeholder detection → an aggregate scorecard. Run it
+with `scripts/eval.sh <artifact.md>` (or `npm run eval`); `EVAL_MIN=0.8` makes it a
+gate. Unit-tested; the demo `research.md` scores 94% overall (77% grounding — the
+gap is qwen's citation imprecision, which is exactly what we want surfaced). This
+layer already caught its own en-dash line-range bug.
+
+**Next (not built):** LLM-as-judge layer for subjective quality (accuracy/usefulness)
+— minimal, cheap; fixtures (sample repos + tasks with known-good artifacts); a
+`--generate` runner that drives the pipeline headlessly per fixture; and A/B scoring
+of prompt variants to catch regressions and tune the small tier.
+
+Original sketch:
 - **Fixtures:** a few small sample repos + tasks with known-good expected artifacts
   (e.g., a `research.md` that correctly cites real `file:line`s).
 - **Runner:** drive `/wb-research` (etc.) headlessly via `pi -p` on each fixture,
