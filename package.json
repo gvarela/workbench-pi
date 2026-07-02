@@ -15,8 +15,7 @@
   "files": [
     "src",
     "agents",
-    "skills",
-    "prompts",
+    "scripts",
     "README.md",
     "LICENSE",
     "tsconfig.json"
@@ -30,12 +29,6 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ],
-    "skills": [
-      "./skills"
-    ],
-    "prompts": [
-      "./prompts/*.md"
     ]
   },
   "peerDependencies": {
