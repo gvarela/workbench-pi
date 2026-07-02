@@ -13,3 +13,8 @@ docs/plans/
 .beads/
 AGENTS.md
 .gitattributes
+
+# eval runtime (clones, scratch, results)
+evals/.repos/
+evals/.work/
+evals/results/

@@ -1,0 +1,14 @@
+{
+  "name": "research-middleware",
+  "repo": "https://github.com/lostisland/faraday",
+  "ref": "v2.14.3",
+  "setup": ["/wb-project Faraday Middleware"],
+  "command": "wb-research",
+  "args": "the middleware stack: how middleware is registered, ordered, and invoked",
+  "artifact": "docs/plans/*/research.md",
+  "requiredHeadings": ["Locations", "How it works", "patterns"],
+  "expect": {
+    "minGrounding": 0.7,
+    "mustCite": ["lib/faraday/middleware.rb"]
+  }
+}

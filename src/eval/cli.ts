@@ -7,47 +7,16 @@
  *   EVAL_MIN=0.8 node src/eval/cli.ts <file>  # exit non-zero if overall < 0.8 (gate)
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { dirname, basename, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, basename } from "node:path";
 import { scorecard, extractCitedPaths } from "./scorers.ts";
+import { repoUniverse } from "./repo.ts";
 
 const REQUIRED: Record<string, string[]> = {
   "research.md": ["Locations", "How it works", "patterns"],
   "design.md": ["Decisions"],
   "tasks.md": ["Phase"],
 };
-
-function repoRoot(dir: string): string | undefined {
-  try {
-    return execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf-8" }).trim();
-  } catch {
-    return undefined;
-  }
-}
-
-function git(root: string, args: string[]): string[] {
-  try {
-    return execFileSync("git", ["-C", root, ...args], { encoding: "utf-8" }).split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Universe of "real" paths: tracked + untracked-visible files, PLUS any cited path
- * that actually exists on disk (covers legitimately gitignored-but-real files, so
- * grounding measures hallucination, not gitignore status).
- */
-function buildUniverse(dir: string, md: string): string[] {
-  const root = repoRoot(dir);
-  if (!root) return [];
-  const set = new Set([...git(root, ["ls-files"]), ...git(root, ["ls-files", "--others", "--exclude-standard"])]);
-  for (const p of extractCitedPaths(md)) {
-    if (existsSync(join(root, p))) set.add(p);
-  }
-  return [...set];
-}
 
 function main() {
   const file = process.argv[2];
@@ -56,7 +25,7 @@ function main() {
     process.exit(2);
   }
   const md = readFileSync(file, "utf-8");
-  const universe = buildUniverse(dirname(file), md);
+  const universe = repoUniverse(dirname(file), extractCitedPaths(md));
   const card = scorecard(md, { universe, requiredHeadings: REQUIRED[basename(file)] ?? [] });
 
   const pct = (n: number) => `${Math.round(n * 100)}%`;
