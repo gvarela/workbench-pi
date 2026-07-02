@@ -72,3 +72,4 @@ PI_RUN_TIMEOUT=300 scripts/pi-run.sh -e ./src/index.ts -nc --no-session -p "/wb-
 - `scripts/run-silent.sh` — context-efficient backpressure ("Success = ✓. Failure = full output.").
 - `scripts/pi-run.sh` — thin timeout guard around `pi` (`PI_RUN_TIMEOUT` secs); you pass all pi flags/prompt.
 - `scripts/eval.sh <artifact.md>` (`npm run eval`) — deterministic quality scorecard for a generated artifact (path-grounding, facts-only, template, placeholders). Free, no model; `EVAL_MIN=0.8` to gate.
+- `scripts/eval-run.sh [--only <fixture>] [--target small|capable] [--runs N] [--judge]` — fixture runner: clones a pinned real repo (e.g. Faraday), drives the pipeline on the target tier, scores + checks expectations, optionally judges with a capable model. Fixtures live in `evals/fixtures/`.

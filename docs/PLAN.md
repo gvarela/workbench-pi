@@ -264,10 +264,22 @@ gate. Unit-tested; the demo `research.md` scores 94% overall (77% grounding — 
 gap is qwen's citation imprecision, which is exactly what we want surfaced). This
 layer already caught its own en-dash line-range bug.
 
-**Next (not built):** LLM-as-judge layer for subjective quality (accuracy/usefulness)
-— minimal, cheap; fixtures (sample repos + tasks with known-good artifacts); a
-`--generate` runner that drives the pipeline headlessly per fixture; and A/B scoring
-of prompt variants to catch regressions and tune the small tier.
+**Built (harness):**
+- **Pure cores** (`src/eval/{fixtures,judge,compare}.ts`, unit-tested): fixture spec
+  parsing + expectation checking; the judge rubric-prompt builder + defensive verdict
+  parser; A/B mean/stdev comparison.
+- **Fixture runner** (`src/eval/run.ts`, `scripts/eval-run.sh`): clones a **real repo
+  pinned to a ref**, drives the pipeline headlessly on a chosen **target** tier,
+  scores + checks expectations, optionally **judges with a capable model**
+  (`--judge`, decoupled from the target — the instrument, not the thing tuned), and
+  supports **variant** A/B via `PI_CODING_AGENT_DIR` (`--variant`).
+- **Ruby-first fixtures**: `evals/fixtures/research-middleware` → Faraday @ v2.14.3
+  (read-only). Planned: a `/wb-design` + `/wb-execution` Faraday fixture, and a
+  `/wb-implement` fixture on a small gem (faraday-retry) that runs `bundle exec rspec`.
+
+**Next:** flesh out the remaining Ruby fixtures (design/execution/implement); wire the
+judge cache; run an A/B (tier, then agent-prompt variants) to actually tune the small
+tier. Note: system-/delegation-prompt A/B needs the prompt strings externalized first.
 
 Original sketch:
 - **Fixtures:** a few small sample repos + tasks with known-good expected artifacts
