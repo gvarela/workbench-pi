@@ -19,6 +19,19 @@ test("editFailureTip fires only for a small-tier edit failure", () => {
   assert.equal(editFailureTip("small", "edit", false), undefined); // only on failure
 });
 
+test("SMALL editing discipline covers the qwen whitespace/write/sed footguns", () => {
+  const small = systemPromptFragment("small");
+  assert.match(small, /tab|whitespace|indentation/i); // whitespace is the #1 edit killer
+  assert.match(small, /space/i); // don't swap spaces for tabs
+  assert.match(small, /never use write|write is for new/i); // never write to fix an existing file
+  assert.match(small, /one sed call|single sed/i); // atomic multi-edit, original line numbers
+  // capable tier stays free of this hand-holding
+  assert.doesNotMatch(systemPromptFragment("capable"), /never use write/i);
+  // the point-of-failure tip steers to sed / flags whitespace
+  assert.match(editFailureTip("small", "edit", true) ?? "", /sed/);
+  assert.match(editFailureTip("small", "edit", true) ?? "", /whitespace|tab/i);
+});
+
 test("systemPromptFragment selects the tier-appropriate fragment", () => {
   const small = systemPromptFragment("small");
   const capable = systemPromptFragment("capable");

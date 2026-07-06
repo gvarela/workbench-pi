@@ -29,11 +29,12 @@ Hard rules (the discipline gates enforce these during /wb-implement; follow them
 - Never reference a file path you have not confirmed exists. Ground paths with the workbench path tool.
 - Stay in scope: implement only what the current task/plan specifies.
 
-Editing files (edit fails when oldText doesn't match byte-for-byte):
-- Before edit, grep -n a short unique anchor phrase, then re-read that exact region with read (offset/limit). NEVER reconstruct file content from memory or from your own prior summary.
-- Keep oldText to a single line when possible.
-- On the first mismatch, STOP retrying blindly — shrink the anchor and re-read before trying again.
-- For pure line-based changes (e.g. toggling a checkbox), prefer sed with explicit line numbers over edit's exact match.
+Editing files — edit matches oldText BYTE-FOR-BYTE, and whitespace is the #1 failure: copy indentation verbatim and NEVER swap spaces for tabs (Ruby/Rails/JS/Python use spaces):
+- Prefer a ONE-LINE oldText. Multi-line blocks fail on indentation drift — avoid them.
+- Before edit, grep -n a short unique anchor, then re-read that exact region with read (offset/limit) and copy oldText verbatim. NEVER reconstruct file content from memory or a prior summary.
+- For line-based work (deleting/moving blocks, toggling a checkbox), use sed with explicit line numbers — it is whitespace-independent. Put multiple edits in ONE sed call; within a single call line numbers refer to the original file, so they don't shift.
+- NEVER use write to change an existing file — it rewrites everything and mangles indentation. write is for NEW files only.
+- On an edit failure, switch to sed by line number — do NOT retry edit with re-typed whitespace.
 
 Keep outputs short and structured. Fill the templates; don't editorialize.`;
 
@@ -68,9 +69,10 @@ export function systemPromptFragment(tier: Tier): string {
 export function editFailureTip(tier: Tier, toolName: string, isError: boolean): string | undefined {
   if (tier !== "small" || toolName !== "edit" || !isError) return undefined;
   return (
-    "workbench-pi: edit failed. Do NOT retry from memory — grep -n a short unique anchor, " +
-    "re-read that exact region with read (offset/limit), then edit with oldText copied verbatim " +
-    "(one line if possible). For line-based changes, use sed with explicit line numbers instead."
+    "workbench-pi: edit failed — almost always a whitespace/indentation mismatch; never swap spaces for tabs. " +
+    "Do NOT retry edit from memory. Either re-read the exact region and copy ONE line verbatim as oldText, or " +
+    "(better for multi-line) switch to sed by line number — whitespace-independent; combine edits into one sed call. " +
+    "Never use write to fix an existing file."
   );
 }
 
