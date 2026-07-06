@@ -30,13 +30,18 @@ export function parseTaskPlan(md: string): Phase[] {
 }
 
 /**
- * Extract the beads epic id embedded in a plan's tasks.md (`Epic: \`<id>\``), so
- * /wb-implement can scope its loop to THIS plan's epic instead of every ready issue
- * in the whole beads DB. Returns undefined when the plan has no created epic.
+ * Extract the beads epic id from a plan's tasks.md, so /wb-implement can scope its
+ * loop to THIS plan's epic instead of every ready issue in the whole beads DB.
+ * Handles both formats:
+ *   - original workbench: YAML frontmatter `beads_epic: <id>`
+ *   - workbench-pi:       body line `Epic: \`<id>\``
+ * Returns undefined when the plan references no created epic.
  */
 export function extractEpicId(tasksMd: string): string | undefined {
-  const m = tasksMd.match(/^Epic:\s*`([^`]+)`/m);
-  return m ? m[1] : undefined;
+  const fm = tasksMd.match(/^beads_epic:\s*["'`]?([A-Za-z0-9][\w.-]*)["'`]?\s*$/m);
+  if (fm && fm[1].toLowerCase() !== "none") return fm[1];
+  const body = tasksMd.match(/^Epic:\s*`([^`]+)`/m);
+  return body ? body[1] : undefined;
 }
 
 /** Assemble tasks.md body, embedding bead ids from the ref→id map. */

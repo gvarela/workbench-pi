@@ -54,9 +54,13 @@ export default function workbenchPi(pi: ExtensionAPI) {
   const gatesArmed = () => implementMode && !gatesOverridden;
 
   const plansRootOf = (cwd: string) => join(cwd, "docs", "plans");
-  const findPlanDir = (cwd: string): string | undefined => {
+  const findPlanDir = (cwd: string, selector?: string): string | undefined => {
     const root = plansRootOf(cwd);
-    return pickPlanDir(existsSync(root) ? readdirSync(root) : []);
+    return pickPlanDir(existsSync(root) ? readdirSync(root) : [], selector);
+  };
+  const listPlanDirs = (cwd: string): string[] => {
+    const root = plansRootOf(cwd);
+    return existsSync(root) ? readdirSync(root).filter((d) => /^\d{4}-\d{2}-\d{2}-/.test(d)) : [];
   };
   const runAgent = async (mgr: SubagentManager, ctx: unknown, type: string, prompt: string, desc: string): Promise<string> => {
     const id = mgr.spawn(pi, ctx, type, prompt, { description: desc });
@@ -319,7 +323,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("wb-implement", {
-    description: "Loop-until-dry: work ready beads tasks via fresh-context TDD workers, verifier-gated. Arg [n] caps task count.",
+    description: "Loop-until-dry over one plan's epic: fresh-context TDD workers, verifier-gated. Arg [plan] selects the plan (default: latest).",
     handler: async (args, ctx) => {
       const mgr = subagentManager();
       if (!mgr) {
@@ -337,17 +341,25 @@ export default function workbenchPi(pi: ExtensionAPI) {
       }
       const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-implement", s);
 
-      // Bound the loop to THIS plan's epic — otherwise `bd ready` returns ready
-      // issues across every plan in the repo's beads DB and we'd drain all of them.
-      const planDir = findPlanDir(ctx.cwd);
+      // Select the plan (arg = substring selector; default latest) and bound the loop
+      // to THAT plan's epic — otherwise `bd ready` returns ready issues across every
+      // plan in the repo's beads DB and we'd drain all of them.
+      const selector = (args ?? "").trim() || undefined;
+      const planDir = findPlanDir(ctx.cwd, selector);
       if (!planDir) {
-        ctx.ui.notify("No plan found under docs/plans/. Run /wb-project + /wb-execution first.", "warning");
+        const plans = listPlanDirs(ctx.cwd);
+        const hint = plans.length ? ` Available: ${plans.join(", ")}` : " Run /wb-project + /wb-execution first.";
+        ctx.ui.notify((selector ? `No plan matches "${selector}".` : "No plan found.") + hint, "warning");
         return;
       }
       const tasksPath = join(plansRootOf(ctx.cwd), planDir, "tasks.md");
       const epicId = existsSync(tasksPath) ? extractEpicId(readFileSync(tasksPath, "utf-8")) : undefined;
       if (!epicId) {
-        ctx.ui.notify(`No beads epic in docs/plans/${planDir}/tasks.md. Run /wb-execution first.`, "warning");
+        ctx.ui.notify(
+          `No beads epic found for ${planDir} (looked for frontmatter \`beads_epic:\` and a body \`Epic: …\` line in tasks.md). ` +
+            `Run /wb-execution, or add \`beads_epic: <id>\` to its tasks.md frontmatter.`,
+          "warning",
+        );
         return;
       }
       // Ready leaf tasks that are descendants of this plan's epic only.
@@ -357,9 +369,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
         ctx.ui.notify(`No ready tasks for ${planDir} (epic ${epicId}). All done/blocked, or run /wb-execution.`, "info");
         return;
       }
-      // [n] caps the task count; default is loop-until-dry (bounded by a safety cap).
-      const maxTasks = Number.parseInt((args ?? "").trim(), 10) || Number.POSITIVE_INFINITY;
-      const HARD_CAP = 100;
+      const HARD_CAP = 100; // runaway backstop; loop otherwise runs until the epic is dry
 
       // structural gate: a task closes only if the verifier independently returns PASS.
       const attempt = async (task: { id: string; title: string }, feedback?: string) => {
@@ -380,7 +390,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
         // Ralph loop (code-driven): re-query bd ready each iteration so tasks unblocked
         // by a close get picked up; `attempted` stops a failed-but-still-ready task from
         // looping forever; HARD_CAP is the runaway backstop.
-        while (results.length < maxTasks && attempted.size < HARD_CAP) {
+        while (attempted.size < HARD_CAP) {
           const task = selectNextReady(await readyForPlan(), attempted);
           if (!task) break; // dry — no ready work left in this plan's epic
           attempted.add(task.id);
@@ -405,7 +415,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
         setStatus(undefined);
       }
       const summary = results.length ? results.join("  ") : "no tasks processed";
-      ctx.ui.notify(`wb-implement (${results.length}): ${summary}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
+      ctx.ui.notify(`wb-implement [${planDir}] (${results.length}): ${summary}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
     },
   });
 

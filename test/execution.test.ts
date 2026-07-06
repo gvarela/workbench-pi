@@ -2,13 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseTaskPlan, assembleTasksBody, extractEpicId } from "../src/execution.ts";
 
-test("extractEpicId reads the embedded epic id, undefined when not created", () => {
+test("extractEpicId reads both workbench-pi body and original-workbench frontmatter", () => {
+  // workbench-pi body format
   assert.equal(extractEpicId("# Tasks\n\nEpic: `wbi-3nq`\n\n## Phase 1"), "wbi-3nq");
   assert.equal(extractEpicId("Epic: (not created)"), undefined);
   assert.equal(extractEpicId("no epic line here"), undefined);
-  // round-trips with assembleTasksBody
   const body = assembleTasksBody("E", [{ name: "P", tasks: ["a"] }], { epic: "E-1" });
   assert.equal(extractEpicId(body), "E-1");
+  // original workbench: YAML frontmatter beads_epic
+  assert.equal(extractEpicId("---\nbeads_epic: Main-sf0z\nstatus: complete\n---\n# Tasks"), "Main-sf0z");
+  assert.equal(extractEpicId('---\nbeads_epic: "blk-abc"\n---'), "blk-abc");
+  assert.equal(extractEpicId("---\nbeads_epic: none\n---"), undefined);
 });
 
 test("parseTaskPlan extracts phases and tasks, ignoring prose and bullet style", () => {
