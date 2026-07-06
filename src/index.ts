@@ -20,7 +20,7 @@ import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
 import { groundPaths, extractCitedPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
 import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft, annotateUngrounded } from "./orchestrator.js";
-import { parseTaskPlan, assembleTasksBody } from "./execution.js";
+import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js";
 import { planBeadsTree, createBeadsTree } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
 import { parseReadyIssues, parseVerdict, selectNextReady } from "./implement.js";
@@ -336,8 +336,25 @@ export default function workbenchPi(pi: ExtensionAPI) {
         return;
       }
       const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-implement", s);
-      if (parseReadyIssues((await bd(["ready", "--json"])).stdout).length === 0) {
-        ctx.ui.notify("No ready tasks. Run /wb-execution first (or all tasks are done/blocked).", "info");
+
+      // Bound the loop to THIS plan's epic — otherwise `bd ready` returns ready
+      // issues across every plan in the repo's beads DB and we'd drain all of them.
+      const planDir = findPlanDir(ctx.cwd);
+      if (!planDir) {
+        ctx.ui.notify("No plan found under docs/plans/. Run /wb-project + /wb-execution first.", "warning");
+        return;
+      }
+      const tasksPath = join(plansRootOf(ctx.cwd), planDir, "tasks.md");
+      const epicId = existsSync(tasksPath) ? extractEpicId(readFileSync(tasksPath, "utf-8")) : undefined;
+      if (!epicId) {
+        ctx.ui.notify(`No beads epic in docs/plans/${planDir}/tasks.md. Run /wb-execution first.`, "warning");
+        return;
+      }
+      // Ready leaf tasks that are descendants of this plan's epic only.
+      const readyForPlan = async () => parseReadyIssues((await bd(["ready", "--parent", epicId, "--limit", "100", "--json"])).stdout);
+
+      if ((await readyForPlan()).length === 0) {
+        ctx.ui.notify(`No ready tasks for ${planDir} (epic ${epicId}). All done/blocked, or run /wb-execution.`, "info");
         return;
       }
       // [n] caps the task count; default is loop-until-dry (bounded by a safety cap).
@@ -364,8 +381,8 @@ export default function workbenchPi(pi: ExtensionAPI) {
         // by a close get picked up; `attempted` stops a failed-but-still-ready task from
         // looping forever; HARD_CAP is the runaway backstop.
         while (results.length < maxTasks && attempted.size < HARD_CAP) {
-          const task = selectNextReady(parseReadyIssues((await bd(["ready", "--json"])).stdout), attempted);
-          if (!task) break; // dry — no ready work left
+          const task = selectNextReady(await readyForPlan(), attempted);
+          if (!task) break; // dry — no ready work left in this plan's epic
           attempted.add(task.id);
           setStatus(`implement ${task.id} (#${results.length + 1})…`);
           await bd(["update", task.id, "--status", "in_progress"]);

@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseTaskPlan, assembleTasksBody } from "../src/execution.ts";
+import { parseTaskPlan, assembleTasksBody, extractEpicId } from "../src/execution.ts";
+
+test("extractEpicId reads the embedded epic id, undefined when not created", () => {
+  assert.equal(extractEpicId("# Tasks\n\nEpic: `wbi-3nq`\n\n## Phase 1"), "wbi-3nq");
+  assert.equal(extractEpicId("Epic: (not created)"), undefined);
+  assert.equal(extractEpicId("no epic line here"), undefined);
+  // round-trips with assembleTasksBody
+  const body = assembleTasksBody("E", [{ name: "P", tasks: ["a"] }], { epic: "E-1" });
+  assert.equal(extractEpicId(body), "E-1");
+});
 
 test("parseTaskPlan extracts phases and tasks, ignoring prose and bullet style", () => {
   const md = [
