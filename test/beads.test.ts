@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSilentId, planBeadsTree } from "../src/tools/beads.ts";
+import { parseSilentId, planBeadsTree, isBeadId } from "../src/tools/beads.ts";
+
+test("isBeadId recognizes bd id shapes, rejects paths/plain words", () => {
+  assert.ok(isBeadId("bd-a3f8e9"));
+  assert.ok(isBeadId("Main-sf0z"));
+  assert.ok(isBeadId("workbench-pi-3nq"));
+  assert.ok(!isBeadId("onboarding")); // no suffix segment
+  assert.ok(!isBeadId("docs/plans/x")); // has slash
+  assert.ok(!isBeadId("blk onboarding")); // has space
+});
 
 test("parseSilentId extracts the id from --silent output, ignoring noise", () => {
   assert.equal(parseSilentId("bd-a3f8e9\n"), "bd-a3f8e9");

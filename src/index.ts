@@ -19,9 +19,9 @@ import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt,
 import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
 import { groundPaths, extractCitedPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
-import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft, annotateUngrounded } from "./orchestrator.js";
+import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft, annotateUngrounded, discoverTasksPaths, matchTasksPaths } from "./orchestrator.js";
 import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js";
-import { planBeadsTree, createBeadsTree } from "./tools/beads.js";
+import { planBeadsTree, createBeadsTree, isBeadId } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
 import { parseReadyIssues, parseVerdict, selectNextReady } from "./implement.js";
 
@@ -57,10 +57,6 @@ export default function workbenchPi(pi: ExtensionAPI) {
   const findPlanDir = (cwd: string, selector?: string): string | undefined => {
     const root = plansRootOf(cwd);
     return pickPlanDir(existsSync(root) ? readdirSync(root) : [], selector);
-  };
-  const listPlanDirs = (cwd: string): string[] => {
-    const root = plansRootOf(cwd);
-    return existsSync(root) ? readdirSync(root).filter((d) => /^\d{4}-\d{2}-\d{2}-/.test(d)) : [];
   };
   const runAgent = async (mgr: SubagentManager, ctx: unknown, type: string, prompt: string, desc: string): Promise<string> => {
     const id = mgr.spawn(pi, ctx, type, prompt, { description: desc });
@@ -341,32 +337,47 @@ export default function workbenchPi(pi: ExtensionAPI) {
       }
       const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-implement", s);
 
-      // Select the plan (arg = substring selector; default latest) and bound the loop
-      // to THAT plan's epic — otherwise `bd ready` returns ready issues across every
-      // plan in the repo's beads DB and we'd drain all of them.
-      const selector = (args ?? "").trim() || undefined;
-      const planDir = findPlanDir(ctx.cwd, selector);
-      if (!planDir) {
-        const plans = listPlanDirs(ctx.cwd);
-        const hint = plans.length ? ` Available: ${plans.join(", ")}` : " Run /wb-project + /wb-execution first.";
-        ctx.ui.notify((selector ? `No plan matches "${selector}".` : "No plan found.") + hint, "warning");
-        return;
-      }
-      const tasksPath = join(plansRootOf(ctx.cwd), planDir, "tasks.md");
-      const epicId = existsSync(tasksPath) ? extractEpicId(readFileSync(tasksPath, "utf-8")) : undefined;
-      if (!epicId) {
-        ctx.ui.notify(
-          `No beads epic found for ${planDir} (looked for frontmatter \`beads_epic:\` and a body \`Epic: …\` line in tasks.md). ` +
-            `Run /wb-execution, or add \`beads_epic: <id>\` to its tasks.md frontmatter.`,
-          "warning",
-        );
-        return;
-      }
-      // Ready leaf tasks that are descendants of this plan's epic only.
-      const readyForPlan = async () => parseReadyIssues((await bd(["ready", "--parent", epicId, "--limit", "100", "--json"])).stdout);
+      // Resolve WHICH epic to work — the model passes the target from its context.
+      // arg may be: an epic id (used directly), a tasks.md path, or a substring.
+      // Discovery is repo-wide (plans aren't always under docs/plans/). Bounding to
+      // one epic is essential — bare `bd ready` spans every plan in the beads DB.
+      const arg = (args ?? "").trim();
+      let epicId: string | undefined;
+      let planLabel = arg || "current plan";
 
+      if (arg && isBeadId(arg) && (await bd(["show", arg, "--json"])).code === 0) {
+        epicId = arg; // model passed an epic id directly
+        planLabel = `epic ${arg}`;
+      } else {
+        const tasksPaths = discoverTasksPaths(await gitUniverse(ctx.cwd));
+        const matches = matchTasksPaths(tasksPaths, arg);
+        if (matches.length === 0) {
+          const hint = tasksPaths.length ? ` Found tasks.md at: ${tasksPaths.join(", ")}` : " None found — run /wb-project + /wb-execution.";
+          ctx.ui.notify((arg ? `No plan matches "${arg}".` : "No plan found.") + hint, "warning");
+          return;
+        }
+        if (matches.length > 1) {
+          ctx.ui.notify(`Multiple plans match${arg ? ` "${arg}"` : ""}: ${matches.join(", ")}. Re-run with a specific path, substring, or the epic id.`, "warning");
+          return;
+        }
+        const tasksPath = matches[0];
+        planLabel = dirname(tasksPath);
+        epicId = extractEpicId(readFileSync(join(ctx.cwd, tasksPath), "utf-8"));
+        if (!epicId) {
+          ctx.ui.notify(
+            `No beads epic in ${tasksPath} (looked for frontmatter \`beads_epic:\` and body \`Epic: …\`). ` +
+              `Run /wb-execution, add \`beads_epic: <id>\` to its frontmatter, or pass the epic id directly.`,
+            "warning",
+          );
+          return;
+        }
+      }
+      const epic = epicId; // narrowed non-undefined for the closure below
+
+      // Ready leaf tasks that are descendants of this epic only.
+      const readyForPlan = async () => parseReadyIssues((await bd(["ready", "--parent", epic, "--limit", "100", "--json"])).stdout);
       if ((await readyForPlan()).length === 0) {
-        ctx.ui.notify(`No ready tasks for ${planDir} (epic ${epicId}). All done/blocked, or run /wb-execution.`, "info");
+        ctx.ui.notify(`No ready tasks for ${planLabel} (epic ${epic}). All done/blocked, or run /wb-execution.`, "info");
         return;
       }
       const HARD_CAP = 100; // runaway backstop; loop otherwise runs until the epic is dry
@@ -415,7 +426,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
         setStatus(undefined);
       }
       const summary = results.length ? results.join("  ") : "no tasks processed";
-      ctx.ui.notify(`wb-implement [${planDir}] (${results.length}): ${summary}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
+      ctx.ui.notify(`wb-implement [${planLabel}] (${results.length}): ${summary}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
     },
   });
 

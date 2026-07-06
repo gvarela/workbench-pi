@@ -12,6 +12,25 @@
 const DATE_PREFIX = /^\d{4}-\d{2}-\d{2}-/;
 
 /**
+ * Find every tasks.md in the repo (location-independent — plans aren't always under
+ * docs/plans/). `repoFiles` is a repo-relative file list (e.g. from git ls-files).
+ */
+export function discoverTasksPaths(repoFiles: string[]): string[] {
+  return repoFiles.filter((p) => p === "tasks.md" || p.endsWith("/tasks.md")).sort();
+}
+
+/**
+ * Narrow discovered tasks.md paths by a selector: exact path match wins, else
+ * substring. Empty selector returns all (caller decides sole-vs-ambiguous).
+ */
+export function matchTasksPaths(paths: string[], selector: string): string[] {
+  const s = selector.trim();
+  if (!s) return paths;
+  const exact = paths.filter((p) => p === s);
+  return exact.length ? exact : paths.filter((p) => p.includes(s));
+}
+
+/**
  * Choose which plan directory to operate on. With an arg, the first dir whose
  * name contains it; otherwise the latest (date-prefixed names sort chronologically).
  */

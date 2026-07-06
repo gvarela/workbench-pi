@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, stripLeadingHeading, assembleDesignDraft, annotateUngrounded } from "../src/orchestrator.ts";
+import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, stripLeadingHeading, assembleDesignDraft, annotateUngrounded, discoverTasksPaths, matchTasksPaths } from "../src/orchestrator.ts";
+
+test("discoverTasksPaths finds tasks.md anywhere in the repo", () => {
+  const files = ["tasks.md", "docs/plans/x/tasks.md", "a/b/tasks.md", "src/index.ts", "notes/tasks.md.bak"];
+  assert.deepEqual(discoverTasksPaths(files), ["a/b/tasks.md", "docs/plans/x/tasks.md", "tasks.md"]);
+});
+
+test("matchTasksPaths: exact path wins, else substring, empty = all", () => {
+  const paths = ["docs/plans/2026-05-04-blk-onboarding/tasks.md", "work/foo/tasks.md"];
+  assert.deepEqual(matchTasksPaths(paths, ""), paths);
+  assert.deepEqual(matchTasksPaths(paths, "work/foo/tasks.md"), ["work/foo/tasks.md"]);
+  assert.deepEqual(matchTasksPaths(paths, "onboarding"), ["docs/plans/2026-05-04-blk-onboarding/tasks.md"]);
+  assert.deepEqual(matchTasksPaths(paths, "nomatch"), []);
+});
 
 test("annotateUngrounded flags hallucinated citations, no-ops when clean", () => {
   assert.equal(annotateUngrounded("body text", []), "body text");

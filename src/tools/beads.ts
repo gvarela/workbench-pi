@@ -37,6 +37,11 @@ export interface BeadsPlan {
 // (e.g. "workbench-pi-3nq"), so allow hyphens before the final segment.
 const ID_RE = /^[A-Za-z][A-Za-z0-9-]*-[A-Za-z0-9]+$/;
 
+/** True if a string is shaped like a bd issue id (prefix-suffix, no slash/space). */
+export function isBeadId(s: string): boolean {
+  return ID_RE.test(s.trim());
+}
+
 /** Extract a bd issue id from `bd create --silent` output (last matching line). */
 export function parseSilentId(stdout: string): string | undefined {
   const lines = stdout
