@@ -37,6 +37,34 @@ export interface BeadsPlan {
 // (e.g. "workbench-pi-3nq"), so allow hyphens before the final segment.
 const ID_RE = /^[A-Za-z][A-Za-z0-9-]*-[A-Za-z0-9]+$/;
 
+/**
+ * Extract every `id` string from any bd `--json` output — flat arrays (`bd list`,
+ * `bd ready`) and nested trees (`bd dep tree`). Used to compute an epic's descendant
+ * closure across both dependency and parent-child edges. Deduped.
+ */
+export function parseIds(jsonStr: string): string[] {
+  let data: unknown;
+  try {
+    data = JSON.parse(jsonStr);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const walk = (n: unknown): void => {
+    if (Array.isArray(n)) {
+      for (const x of n) walk(x);
+      return;
+    }
+    if (n && typeof n === "object") {
+      const o = n as Record<string, unknown>;
+      if (typeof o.id === "string") out.push(o.id);
+      for (const v of Object.values(o)) if (v && typeof v === "object") walk(v);
+    }
+  };
+  walk(data);
+  return [...new Set(out)];
+}
+
 /** True if a string is shaped like a bd issue id (prefix-suffix, no slash/space). */
 export function isBeadId(s: string): boolean {
   return ID_RE.test(s.trim());

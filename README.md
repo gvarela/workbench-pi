@@ -28,7 +28,7 @@ pi   # then run /wb-setup once to register the subagents
 | `/wb-research <topic>` | Orchestrated subagents → `research.md` (facts only) |
 | `/wb-design <topic>` | Draft `design.md` (small tier: gathered context + decisions checklist for you; capable tier: model-led) |
 | `/wb-execution [epic title]` | `wb-planner` → phased tasks → deterministic beads issue tree → `tasks.md` (ids captured in code) |
-| `/wb-implement [target]` | **Loop-until-dry** over ONE plan's epic (`bd ready --parent <epic>`): fresh-context TDD workers, re-querying each iteration; each closes only on an independent `wb-verifier` PASS (one retry). `[target]` = an **epic id**, a **tasks.md path**, or a **substring**; plans are discovered **repo-wide** (not just `docs/plans/`). Epic id is read from `tasks.md` (both `beads_epic:` frontmatter and `Epic: \`…\`` body). Ambiguous/no match → it lists candidates so you re-run with a specific one. |
+| `/wb-implement [target]` | **Loop-until-dry** over ONE plan's epic: fresh-context TDD workers, re-querying each iteration; each closes only on an independent `wb-verifier` PASS (one retry). Scope = the epic's **descendant closure across dependency AND parent-child edges** (plans link epic→PRs by dependency and PR→subtasks by parent-child, so `--parent` alone misses the leaves), intersected with `bd ready`. `[target]` = an **epic id**, a **tasks.md path**, or a **substring**; plans discovered **repo-wide**. Epic id read from `tasks.md` (`beads_epic:` frontmatter or `Epic: \`…\`` body). Ambiguous/no match → lists candidates. |
 | `/wb-validate` | Run the suite + verifier against the plan; writes `validation.md` |
 | `/wb-override` | Escape hatch: toggle the discipline gates off/on for the session |
 

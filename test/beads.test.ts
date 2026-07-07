@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSilentId, planBeadsTree, isBeadId } from "../src/tools/beads.ts";
+import { parseSilentId, planBeadsTree, isBeadId, parseIds } from "../src/tools/beads.ts";
+
+test("parseIds pulls ids from flat arrays and nested dep trees, deduped", () => {
+  assert.deepEqual(parseIds('[{"id":"a"},{"id":"b"}]'), ["a", "b"]);
+  // nested tree (bd dep tree) with an arbitrary child key
+  assert.deepEqual(parseIds('[{"id":"e","dependencies":[{"id":"c1"},{"id":"c2","children":[{"id":"g"}]}]}]'), ["e", "c1", "c2", "g"]);
+  assert.deepEqual(parseIds('[{"id":"a"},{"id":"a"}]'), ["a"]); // dedup
+  assert.deepEqual(parseIds("not json"), []);
+});
 
 test("isBeadId recognizes bd id shapes, rejects paths/plain words", () => {
   assert.ok(isBeadId("bd-a3f8e9"));

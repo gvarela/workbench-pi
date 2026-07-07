@@ -21,7 +21,7 @@ import { groundPaths, extractCitedPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
 import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDesignDraft, annotateUngrounded, discoverTasksPaths, matchTasksPaths } from "./orchestrator.js";
 import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js";
-import { planBeadsTree, createBeadsTree, isBeadId } from "./tools/beads.js";
+import { planBeadsTree, createBeadsTree, isBeadId, parseIds } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
 import { parseReadyIssues, parseVerdict, selectNextReady } from "./implement.js";
 
@@ -374,10 +374,22 @@ export default function workbenchPi(pi: ExtensionAPI) {
       }
       const epic = epicId; // narrowed non-undefined for the closure below
 
-      // Ready leaf tasks that are descendants of this epic only.
-      const readyForPlan = async () => parseReadyIssues((await bd(["ready", "--parent", epic, "--limit", "100", "--json"])).stdout);
+      // Scope to the epic's descendant CLOSURE across BOTH edge types: plans link
+      // epic→PRs by DEPENDENCY and PR→subtasks by PARENT-CHILD, so `bd ready --parent
+      // <epic>` (parent-field only) misses the real leaf tasks. Closure = dep-tree-down
+      // ∪ parent-children of each node. Then filter the unscoped ready set to it.
+      setStatus("scoping to plan…");
+      const depDesc = parseIds((await bd(["dep", "tree", epic, "--direction", "down", "--json"])).stdout);
+      const closure = new Set<string>([epic, ...depDesc]);
+      for (const id of [epic, ...depDesc]) {
+        for (const kid of parseIds((await bd(["list", "--parent", id, "--json"])).stdout)) closure.add(kid);
+      }
+      setStatus(undefined);
+      // Unscoped ready, filtered to this plan's closure. (bd ready --limit 0 = none, so use a high cap.)
+      const readyForPlan = async () =>
+        parseReadyIssues((await bd(["ready", "--limit", "1000", "--json"])).stdout).filter((t) => closure.has(t.id));
       if ((await readyForPlan()).length === 0) {
-        ctx.ui.notify(`No ready tasks for ${planLabel} (epic ${epic}). All done/blocked, or run /wb-execution.`, "info");
+        ctx.ui.notify(`No ready tasks for ${planLabel} (epic ${epic}; ${closure.size} issues in scope). All done/blocked, or run /wb-execution.`, "info");
         return;
       }
       const HARD_CAP = 100; // runaway backstop; loop otherwise runs until the epic is dry
