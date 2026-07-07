@@ -346,8 +346,8 @@ export default function workbenchPi(pi: ExtensionAPI) {
       let planLabel = arg || "current plan";
 
       if (arg && isBeadId(arg) && (await bd(["show", arg, "--json"])).code === 0) {
-        epicId = arg; // model passed an epic id directly
-        planLabel = `epic ${arg}`;
+        epicId = arg; // model passed a target id directly (epic, PR/phase, or task)
+        planLabel = `target ${arg}`;
       } else {
         const tasksPaths = discoverTasksPaths(await gitUniverse(ctx.cwd));
         const matches = matchTasksPaths(tasksPaths, arg);
@@ -372,24 +372,32 @@ export default function workbenchPi(pi: ExtensionAPI) {
           return;
         }
       }
-      const epic = epicId; // narrowed non-undefined for the closure below
+      const root = epicId; // target root — may be an epic, a PR/phase, or a single task
 
-      // Scope to the epic's descendant CLOSURE across BOTH edge types: plans link
-      // epic→PRs by DEPENDENCY and PR→subtasks by PARENT-CHILD, so `bd ready --parent
-      // <epic>` (parent-field only) misses the real leaf tasks. Closure = dep-tree-down
-      // ∪ parent-children of each node. Then filter the unscoped ready set to it.
-      setStatus("scoping to plan…");
-      const depDesc = parseIds((await bd(["dep", "tree", epic, "--direction", "down", "--json"])).stdout);
-      const closure = new Set<string>([epic, ...depDesc]);
-      for (const id of [epic, ...depDesc]) {
-        for (const kid of parseIds((await bd(["list", "--parent", id, "--json"])).stdout)) closure.add(kid);
+      // Scope to the target's descendant CLOSURE across BOTH edge types (epic→PRs by
+      // dependency, PR→subtasks by parent-child), tracking which nodes are umbrella
+      // PARENTS (have open children) so we can prefer concrete leaf work. Pass a
+      // narrower target for a narrower, self-terminating run.
+      setStatus("scoping…");
+      const closure = new Set<string>([root]);
+      const parents = new Set<string>(); // nodes with open children — umbrellas, not leaf work
+      const depDesc = parseIds((await bd(["dep", "tree", root, "--direction", "down", "--json"])).stdout);
+      depDesc.forEach((d) => closure.add(d));
+      const queue = [root, ...depDesc];
+      while (queue.length) {
+        const id = queue.shift() as string;
+        const kids = parseIds((await bd(["list", "--parent", id, "--json"])).stdout);
+        if (kids.length) parents.add(id);
+        for (const kid of kids) if (!closure.has(kid)) { closure.add(kid); queue.push(kid); }
       }
       setStatus(undefined);
-      // Unscoped ready, filtered to this plan's closure. (bd ready --limit 0 = none, so use a high cap.)
+      // Unscoped ready ∩ closure, LEAVES ONLY (umbrella parents are skipped — their
+      // children are the work; when the leaves are done the loop goes dry and stops,
+      // leaving the parent open to close/merge). bd ready --limit 0 = none → high cap.
       const readyForPlan = async () =>
-        parseReadyIssues((await bd(["ready", "--limit", "1000", "--json"])).stdout).filter((t) => closure.has(t.id));
+        parseReadyIssues((await bd(["ready", "--limit", "1000", "--json"])).stdout).filter((t) => closure.has(t.id) && !parents.has(t.id));
       if ((await readyForPlan()).length === 0) {
-        ctx.ui.notify(`No ready tasks for ${planLabel} (epic ${epic}; ${closure.size} issues in scope). All done/blocked, or run /wb-execution.`, "info");
+        ctx.ui.notify(`No ready leaf tasks for ${planLabel} (${root}; ${closure.size} in scope). All done/blocked, only umbrellas left, or run /wb-execution.`, "info");
         return;
       }
       const HARD_CAP = 100; // runaway backstop; loop otherwise runs until the epic is dry
