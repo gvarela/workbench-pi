@@ -23,13 +23,14 @@ import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDes
 import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js";
 import { planBeadsTree, createBeadsTree, isBeadId, parseIds } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
-import { parseReadyIssues, parseVerdict, selectNextReady } from "./implement.js";
+import { parseReadyIssues, parseVerdict, selectNextReady, decideNext } from "./implement.js";
 
 /** Minimal view of the @tintinweb/pi-subagents manager exposed via globalThis. */
 interface SpawnOpts {
   description: string;
   onToolActivity?: (a: { type: string; toolName?: string }) => void;
   signal?: AbortSignal;
+  isBackground?: boolean;
 }
 interface SubagentManager {
   spawn(pi: unknown, ctx: unknown, type: string, prompt: string, options: SpawnOpts): string;
@@ -90,6 +91,114 @@ export default function workbenchPi(pi: ExtensionAPI) {
     };
     return [...(await read(["ls-files"])), ...(await read(["ls-files", "--others", "--exclude-standard"]))];
   };
+
+  // ---- Autonomous /wb-implement coordinator (event-driven, non-blocking) ----
+  // Principles: autonomous (loop-until-dry), observable (session stays live so /agents
+  // works + live status), steerable (/wb-stop, /agents stop). Workers run in the
+  // background; the chain is driven by subagents:completed/failed events, not a
+  // blocking loop that would freeze the session.
+  type WbCtx = {
+    cwd: string;
+    ui: { notify: (m: string, level?: string) => void; setStatus?: (id: string, s?: string) => void };
+  };
+  let sessionCtx: WbCtx | undefined; // durable ctx for background spawns/notify (captured at session_start)
+  interface ImplActive { taskId: string; title: string; phase: "impl" | "verify"; agentId: string; retried: boolean; work: string }
+  interface ImplRun { root: string; label: string; closure: Set<string>; parents: Set<string>; attempted: Set<string>; results: string[]; stopping: boolean; active?: ImplActive }
+  let implRun: ImplRun | undefined;
+
+  const bd = (cwd: string, a: string[]) =>
+    pi.exec("bd", a, { cwd, timeout: 15_000 }).catch(() => ({ code: 1, stdout: "", stderr: "bd not found", killed: false }));
+
+  const readyLeaves = async (cwd: string, closure: Set<string>, parents: Set<string>) =>
+    parseReadyIssues((await bd(cwd, ["ready", "--limit", "1000", "--json"])).stdout).filter((t) => closure.has(t.id) && !parents.has(t.id));
+
+  // Descendant closure of `root` across dependency + parent-child edges; `parents` =
+  // umbrella nodes (open children) to skip in favor of concrete leaf work.
+  const computeScope = async (cwd: string, root: string) => {
+    const closure = new Set<string>([root]);
+    const parents = new Set<string>();
+    const depDesc = parseIds((await bd(cwd, ["dep", "tree", root, "--direction", "down", "--json"])).stdout);
+    depDesc.forEach((d) => closure.add(d));
+    const queue = [root, ...depDesc];
+    while (queue.length) {
+      const id = queue.shift() as string;
+      const kids = parseIds((await bd(cwd, ["list", "--parent", id, "--json"])).stdout);
+      if (kids.length) parents.add(id);
+      for (const k of kids) if (!closure.has(k)) { closure.add(k); queue.push(k); }
+    }
+    return { closure, parents };
+  };
+
+  const implPrompt = (t: { id: string; title: string }, feedback?: string) =>
+    `Task ${t.id}: ${t.title}\nImplement this and ONLY this, TDD, in the current repo.` +
+    (feedback ? `\n\nA previous attempt FAILED verification:\n${feedback}\nFix it.` : "");
+  const verifyPrompt = (t: { id: string; title: string }, work: string) =>
+    `Task ${t.id}: ${t.title}\nVerify the work just done: run the tests and check scope. Worker report:\n${work}`;
+
+  const spawnWorker = (ctx: WbCtx, type: string, prompt: string, desc: string): string | undefined => {
+    const mgr = subagentManager();
+    if (!mgr) return undefined;
+    return mgr.spawn(pi, ctx, type, prompt, {
+      description: desc,
+      isBackground: true, // non-blocking — session stays live and inspectable
+      onToolActivity: (a) => { if (a.type === "start" && a.toolName) ctx.ui.setStatus?.("wb-run", `${desc}: ${a.toolName}…`); },
+    });
+  };
+
+  const finishRun = (reason: string) => {
+    const run = implRun;
+    const ctx = sessionCtx;
+    implRun = undefined;
+    if (!ctx) return;
+    void bd(ctx.cwd, ["sync"]);
+    ctx.ui.setStatus?.("wb-run", undefined);
+    const bad = run?.results.some((r) => r.startsWith("✗"));
+    ctx.ui.notify(`wb-implement finished (${reason})${run ? ` [${run.label}]` : ""}: ${run?.results.join("  ") || "no tasks"}`, bad ? "warning" : "info");
+  };
+
+  const advanceRun = async () => {
+    const run = implRun;
+    const ctx = sessionCtx;
+    if (!run || !ctx) return;
+    if (run.stopping) return finishRun("stopped by user");
+    const next = selectNextReady(await readyLeaves(ctx.cwd, run.closure, run.parents), run.attempted);
+    if (!next) return finishRun("done");
+    run.attempted.add(next.id);
+    await bd(ctx.cwd, ["update", next.id, "--status", "in_progress"]);
+    const agentId = spawnWorker(ctx, "wb-implementer", implPrompt(next), `impl ${next.id}`);
+    if (!agentId) return finishRun("no subagent manager");
+    run.active = { taskId: next.id, title: next.title, phase: "impl", agentId, retried: false, work: "" };
+    ctx.ui.notify(`wb-implement: ${next.id} (${run.results.length} done)`, "info");
+  };
+
+  // Drive the impl→verify→close/retry/fail→next chain on each worker completion.
+  const onWorkerEvent = async (payload: unknown) => {
+    const run = implRun;
+    const ctx = sessionCtx;
+    if (!run?.active || !ctx) return;
+    const p = (payload ?? {}) as { id?: string; result?: string; status?: string };
+    if (p.id !== run.active.agentId) return; // not the worker we're awaiting
+    const active = run.active;
+    run.active = undefined;
+    if (p.status === "stopped") return finishRun(`worker stopped at ${active.taskId}`); // user intervened via /agents
+    const result = p.result ?? "";
+    if (active.phase === "impl") {
+      const agentId = spawnWorker(ctx, "wb-verifier", verifyPrompt(active, result), `verify ${active.taskId}`);
+      if (agentId) { run.active = { ...active, phase: "verify", agentId, work: result }; return; }
+      await bd(ctx.cwd, ["update", active.taskId, "--status", "open"]); run.results.push(`✗ ${active.taskId}`);
+    } else {
+      const decision = decideNext("verify", parseVerdict(result), active.retried);
+      if (decision === "close") { await bd(ctx.cwd, ["close", active.taskId]); run.results.push(`✓ ${active.taskId}`); }
+      else if (decision === "retry") {
+        const agentId = spawnWorker(ctx, "wb-implementer", implPrompt(active, result), `impl ${active.taskId} (retry)`);
+        if (agentId) { run.active = { ...active, phase: "impl", agentId, retried: true, work: "" }; return; }
+        await bd(ctx.cwd, ["update", active.taskId, "--status", "open"]); run.results.push(`✗ ${active.taskId}`);
+      } else { await bd(ctx.cwd, ["update", active.taskId, "--status", "open"]); run.results.push(`✗ ${active.taskId}`); }
+    }
+    await advanceRun();
+  };
+  (pi as { events?: { on?: (e: string, h: (p: unknown) => void) => void } }).events?.on?.("subagents:completed", onWorkerEvent);
+  (pi as { events?: { on?: (e: string, h: (p: unknown) => void) => void } }).events?.on?.("subagents:failed", onWorkerEvent);
 
   pi.registerTool({
     name: "wb_ping",
@@ -334,135 +443,87 @@ export default function workbenchPi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("wb-implement", {
-    description: "Loop-until-dry over one plan's epic: fresh-context TDD workers, verifier-gated. Arg [plan] selects the plan (default: latest).",
+    description: "Start an autonomous, observable, steerable implement loop over a target's subtree. Arg [target] = epic id | tasks.md path | substring.",
     handler: async (args, ctx) => {
-      const mgr = subagentManager();
-      if (!mgr) {
-        ctx.ui.notify("wb-implement needs @tintinweb/pi-subagents + /wb-setup.", "error");
+      sessionCtx = ctx as unknown as WbCtx; // background events use this
+      if (implRun) {
+        const a = implRun.active;
+        ctx.ui.notify(`wb-implement already running [${implRun.label}] — ${implRun.results.length} done${a ? `, now ${a.phase} ${a.taskId}` : ""}. /wb-status, /wb-stop, or /agents.`, "warning");
         return;
       }
-      const bd = async (a: string[]) => pi.exec("bd", a, { cwd: ctx.cwd, timeout: 15_000 }).catch(() => ({ code: 1, stdout: "", stderr: "bd not found", killed: false }));
-      if ((await bd(["version"])).code !== 0) {
-        ctx.ui.notify("beads CLI (bd) not found.", "error");
-        return;
-      }
-      if ((await bd(["where"])).code !== 0) {
-        ctx.ui.notify("beads not initialized here. Run `bd init` first.", "warning");
-        return;
-      }
-      const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-implement", s);
+      if (!subagentManager()) { ctx.ui.notify("wb-implement needs @tintinweb/pi-subagents + /wb-setup.", "error"); return; }
+      if ((await bd(ctx.cwd, ["version"])).code !== 0) { ctx.ui.notify("beads CLI (bd) not found.", "error"); return; }
+      if ((await bd(ctx.cwd, ["where"])).code !== 0) { ctx.ui.notify("beads not initialized here. Run `bd init` first.", "warning"); return; }
 
-      // Resolve WHICH epic to work — the model passes the target from its context.
-      // arg may be: an epic id (used directly), a tasks.md path, or a substring.
-      // Discovery is repo-wide (plans aren't always under docs/plans/). Bounding to
-      // one epic is essential — bare `bd ready` spans every plan in the beads DB.
+      // Resolve the target root — arg = epic id | tasks.md path | substring (default: sole plan).
       const arg = (args ?? "").trim();
-      let epicId: string | undefined;
-      let planLabel = arg || "current plan";
-
-      if (arg && isBeadId(arg) && (await bd(["show", arg, "--json"])).code === 0) {
-        epicId = arg; // model passed a target id directly (epic, PR/phase, or task)
-        planLabel = `target ${arg}`;
+      let root: string | undefined;
+      let label = arg || "current plan";
+      if (arg && isBeadId(arg) && (await bd(ctx.cwd, ["show", arg, "--json"])).code === 0) {
+        root = arg;
+        label = `target ${arg}`;
       } else {
         const tasksPaths = discoverTasksPaths(await gitUniverse(ctx.cwd));
         const matches = matchTasksPaths(tasksPaths, arg);
         if (matches.length === 0) {
-          const hint = tasksPaths.length ? ` Found tasks.md at: ${tasksPaths.join(", ")}` : " None found — run /wb-project + /wb-execution.";
-          ctx.ui.notify((arg ? `No plan matches "${arg}".` : "No plan found.") + hint, "warning");
+          ctx.ui.notify((arg ? `No plan matches "${arg}".` : "No plan found.") + (tasksPaths.length ? ` Found tasks.md at: ${tasksPaths.join(", ")}` : " Run /wb-project + /wb-execution."), "warning");
           return;
         }
         if (matches.length > 1) {
           ctx.ui.notify(`Multiple plans match${arg ? ` "${arg}"` : ""}: ${matches.join(", ")}. Re-run with a specific path, substring, or the epic id.`, "warning");
           return;
         }
-        const tasksPath = matches[0];
-        planLabel = dirname(tasksPath);
-        epicId = extractEpicId(readFileSync(join(ctx.cwd, tasksPath), "utf-8"));
-        if (!epicId) {
-          ctx.ui.notify(
-            `No beads epic in ${tasksPath} (looked for frontmatter \`beads_epic:\` and body \`Epic: …\`). ` +
-              `Run /wb-execution, add \`beads_epic: <id>\` to its frontmatter, or pass the epic id directly.`,
-            "warning",
-          );
+        label = dirname(matches[0]);
+        root = extractEpicId(readFileSync(join(ctx.cwd, matches[0]), "utf-8"));
+        if (!root) {
+          ctx.ui.notify(`No beads epic in ${matches[0]} (looked for \`beads_epic:\` frontmatter or \`Epic: …\` body). Run /wb-execution or pass the epic id.`, "warning");
           return;
         }
       }
-      const root = epicId; // target root — may be an epic, a PR/phase, or a single task
 
-      // Scope to the target's descendant CLOSURE across BOTH edge types (epic→PRs by
-      // dependency, PR→subtasks by parent-child), tracking which nodes are umbrella
-      // PARENTS (have open children) so we can prefer concrete leaf work. Pass a
-      // narrower target for a narrower, self-terminating run.
-      setStatus("scoping…");
-      const closure = new Set<string>([root]);
-      const parents = new Set<string>(); // nodes with open children — umbrellas, not leaf work
-      const depDesc = parseIds((await bd(["dep", "tree", root, "--direction", "down", "--json"])).stdout);
-      depDesc.forEach((d) => closure.add(d));
-      const queue = [root, ...depDesc];
-      while (queue.length) {
-        const id = queue.shift() as string;
-        const kids = parseIds((await bd(["list", "--parent", id, "--json"])).stdout);
-        if (kids.length) parents.add(id);
-        for (const kid of kids) if (!closure.has(kid)) { closure.add(kid); queue.push(kid); }
-      }
-      setStatus(undefined);
-      // Unscoped ready ∩ closure, LEAVES ONLY (umbrella parents are skipped — their
-      // children are the work; when the leaves are done the loop goes dry and stops,
-      // leaving the parent open to close/merge). bd ready --limit 0 = none → high cap.
-      const readyForPlan = async () =>
-        parseReadyIssues((await bd(["ready", "--limit", "1000", "--json"])).stdout).filter((t) => closure.has(t.id) && !parents.has(t.id));
-      if ((await readyForPlan()).length === 0) {
-        ctx.ui.notify(`No ready leaf tasks for ${planLabel} (${root}; ${closure.size} in scope). All done/blocked, only umbrellas left, or run /wb-execution.`, "info");
+      ctx.ui.setStatus?.("wb-run", "scoping…");
+      const { closure, parents } = await computeScope(ctx.cwd, root);
+      ctx.ui.setStatus?.("wb-run", undefined);
+      const first = selectNextReady(await readyLeaves(ctx.cwd, closure, parents), new Set());
+      if (!first) {
+        ctx.ui.notify(`No ready leaf tasks for ${label} (${root}; ${closure.size} in scope). All done/blocked, only umbrellas left, or run /wb-execution.`, "info");
         return;
       }
-      const HARD_CAP = 100; // runaway backstop; loop otherwise runs until the epic is dry
 
-      // structural gate: a task closes only if the verifier independently returns PASS.
-      const attempt = async (task: { id: string; title: string }, feedback?: string) => {
-        const work = await runAgent(mgr, ctx, "wb-implementer",
-          `Task ${task.id}: ${task.title}\nImplement this and ONLY this, TDD, in the current repo.` +
-            (feedback ? `\n\nA previous attempt FAILED verification:\n${feedback}\nFix it.` : ""),
-          `impl ${task.id}`);
-        const verify = await runAgent(mgr, ctx, "wb-verifier",
-          `Task ${task.id}: ${task.title}\nVerify the work just done: run the tests and check scope. Worker report:\n${work}`,
-          `verify ${task.id}`);
-        return { verify, verdict: parseVerdict(verify) };
-      };
+      implRun = { root, label, closure, parents, attempted: new Set([first.id]), results: [], stopping: false };
+      await bd(ctx.cwd, ["update", first.id, "--status", "in_progress"]);
+      const agentId = spawnWorker(sessionCtx, "wb-implementer", implPrompt(first), `impl ${first.id}`);
+      if (!agentId) { implRun = undefined; ctx.ui.notify("wb-implement: failed to spawn worker.", "error"); return; }
+      implRun.active = { taskId: first.id, title: first.title, phase: "impl", agentId, retried: false, work: "" };
+      ctx.ui.notify(`wb-implement started [${label}] — autonomous, working ${first.id}. Observe: /agents or /wb-status. Halt: /wb-stop.`, "info");
+    },
+  });
 
-      implementMode = true;
-      const attempted = new Set<string>();
-      const results: string[] = [];
-      try {
-        // Ralph loop (code-driven): re-query bd ready each iteration so tasks unblocked
-        // by a close get picked up; `attempted` stops a failed-but-still-ready task from
-        // looping forever; HARD_CAP is the runaway backstop.
-        while (attempted.size < HARD_CAP) {
-          if (ctx.signal?.aborted) break; // Esc/interrupt stops the loop between tasks
-          const task = selectNextReady(await readyForPlan(), attempted);
-          if (!task) break; // dry — no ready work left in this plan's epic
-          attempted.add(task.id);
-          setStatus(`implement ${task.id} (#${results.length + 1})…`);
-          await bd(["update", task.id, "--status", "in_progress"]);
-          let { verify, verdict } = await attempt(task);
-          if (verdict !== "PASS") {
-            setStatus(`retry ${task.id}…`);
-            ({ verify, verdict } = await attempt(task, verify));
-          }
-          if (verdict === "PASS") {
-            await bd(["close", task.id]);
-            results.push(`✓ ${task.id}`);
-          } else {
-            await bd(["update", task.id, "--status", "open"]);
-            results.push(`✗ ${task.id} (${verdict})`);
-          }
-        }
-        await bd(["sync"]);
-      } finally {
-        implementMode = false;
-        setStatus(undefined);
+  pi.registerCommand("wb-stop", {
+    description: "Halt the running /wb-implement loop after the current task (hard-stop a worker via /agents)",
+    handler: async (_args, ctx) => {
+      if (!implRun) {
+        ctx.ui.notify("No wb-implement run in progress.", "info");
+        return;
       }
-      const summary = results.length ? results.join("  ") : "no tasks processed";
-      ctx.ui.notify(`wb-implement [${planLabel}] (${results.length}): ${summary}`, results.some((r) => r.startsWith("✗")) ? "warning" : "info");
+      implRun.stopping = true;
+      ctx.ui.notify(`Stopping wb-implement after ${implRun.active?.taskId ?? "the current task"}. Hard-stop the worker now via /agents.`, "info");
+    },
+  });
+
+  pi.registerCommand("wb-status", {
+    description: "Show the running /wb-implement loop's progress",
+    handler: async (_args, ctx) => {
+      if (!implRun) {
+        ctx.ui.notify("No wb-implement run in progress.", "info");
+        return;
+      }
+      const a = implRun.active;
+      ctx.ui.notify(
+        `wb-implement [${implRun.label}]: ${implRun.results.length} done (${implRun.results.join(" ") || "—"})` +
+          `${a ? `; now ${a.phase} ${a.taskId}${a.retried ? " (retry)" : ""}` : ""}${implRun.stopping ? "; stopping…" : ""}`,
+        "info",
+      );
     },
   });
 
@@ -553,11 +614,13 @@ export default function workbenchPi(pi: ExtensionAPI) {
   // Keep the resolved tier current as the model is (re)selected.
   pi.on("session_start", async (_event, ctx) => {
     tier = resolveTier(ctx.model?.id);
+    sessionCtx = ctx as unknown as WbCtx; // durable ctx for background /wb-implement events
   });
 
   // Inject the tier-appropriate workflow instructions.
   pi.on("before_agent_start", async (event, ctx) => {
     tier = resolveTier(ctx.model?.id);
+    sessionCtx ??= ctx as unknown as WbCtx;
     return { systemPrompt: `${event.systemPrompt}\n\n${systemPromptFragment(tier)}\n` };
   });
 
