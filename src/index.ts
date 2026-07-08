@@ -23,7 +23,9 @@ import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDes
 import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js";
 import { planBeadsTree, createBeadsTree, isBeadId, parseIds } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
-import { parseReadyIssues, parseVerdict, selectNextReady, decideNext } from "./implement.js";
+import { parseReadyIssues, parseVerdict, type ReadyIssue } from "./implement.js";
+import { startImplementRun, type RunHandle } from "./coordinator.js";
+import { parseBeadDetail, detectTestCommand, extractTestCommandFromFrontmatter, buildContextPack } from "./context-pack.js";
 
 /** Minimal view of the @tintinweb/pi-subagents manager exposed via globalThis. */
 interface SpawnOpts {
@@ -32,10 +34,16 @@ interface SpawnOpts {
   signal?: AbortSignal;
   isBackground?: boolean;
 }
+interface AgentRecordView {
+  result?: string;
+  error?: string;
+  status: string;
+  /** Resolves when the agent reaches a terminal state (result/status then final). */
+  promise?: Promise<unknown>;
+}
 interface SubagentManager {
   spawn(pi: unknown, ctx: unknown, type: string, prompt: string, options: SpawnOpts): string;
-  waitForAll(): Promise<void>;
-  getRecord(id: string): { result?: string; error?: string; status: string } | undefined;
+  getRecord(id: string): AgentRecordView | undefined;
 }
 function subagentManager(): SubagentManager | undefined {
   return (globalThis as Record<symbol, unknown>)[Symbol.for("pi-subagents:manager")] as SubagentManager | undefined;
@@ -75,7 +83,13 @@ export default function workbenchPi(pi: ExtensionAPI) {
         if (a.type === "start" && a.toolName) setS?.("wb-agent", `${desc}: ${a.toolName}…`);
       },
     });
-    await mgr.waitForAll();
+    // Await THIS record's promise, not waitForAll() — waitForAll also waits on any
+    // background /wb-implement workers, which would hang this command mid-run.
+    try {
+      await mgr.getRecord(id)?.promise;
+    } catch {
+      /* terminal status/result still reflect the failure */
+    }
     setS?.("wb-agent", undefined);
     return mgr.getRecord(id)?.result ?? "";
   };
@@ -92,20 +106,10 @@ export default function workbenchPi(pi: ExtensionAPI) {
     return [...(await read(["ls-files"])), ...(await read(["ls-files", "--others", "--exclude-standard"]))];
   };
 
-  // ---- Autonomous /wb-implement coordinator (event-driven, non-blocking) ----
-  // Principles: autonomous (loop-until-dry), observable (session stays live so /agents
-  // works + live status), steerable (/wb-stop, /agents stop). Workers run in the
-  // background; the chain is driven by subagents:completed/failed events, not a
-  // blocking loop that would freeze the session.
-  type WbCtx = {
-    cwd: string;
-    ui: { notify: (m: string, level?: string) => void; setStatus?: (id: string, s?: string) => void };
-  };
-  let sessionCtx: WbCtx | undefined; // durable ctx for background spawns/notify (captured at session_start)
-  interface ImplActive { taskId: string; title: string; phase: "impl" | "verify"; agentId: string; retried: boolean; work: string }
-  interface ImplRun { root: string; label: string; closure: Set<string>; parents: Set<string>; attempted: Set<string>; results: string[]; stopping: boolean; active?: ImplActive }
-  let implRun: ImplRun | undefined;
-
+  // ---- Autonomous /wb-implement run (promise-based coordinator; see coordinator.ts) ----
+  // The loop itself lives in src/coordinator.ts (tested with fakes). This block is
+  // the thin adapter layer: bd/scoping, background spawn-and-await, and deterministic
+  // context provisioning for workers.
   const bd = (cwd: string, a: string[]) =>
     pi.exec("bd", a, { cwd, timeout: 15_000 }).catch(() => ({ code: 1, stdout: "", stderr: "bd not found", killed: false }));
 
@@ -129,76 +133,74 @@ export default function workbenchPi(pi: ExtensionAPI) {
     return { closure, parents };
   };
 
-  const implPrompt = (t: { id: string; title: string }, feedback?: string) =>
-    `Task ${t.id}: ${t.title}\nImplement this and ONLY this, TDD, in the current repo.` +
-    (feedback ? `\n\nA previous attempt FAILED verification:\n${feedback}\nFix it.` : "");
-  const verifyPrompt = (t: { id: string; title: string }, work: string) =>
-    `Task ${t.id}: ${t.title}\nVerify the work just done: run the tests and check scope. Worker report:\n${work}`;
+  // One run at a time; state lives on the handle, ctx is snapshotted at start —
+  // no module-level session ctx that a /new session or second invocation could clobber.
+  let activeRun: RunHandle | undefined;
+  let activeRunAbort: AbortController | undefined;
 
-  const spawnWorker = (ctx: WbCtx, type: string, prompt: string, desc: string): string | undefined => {
+  /** Spawn a background worker and await ITS record's terminal state. */
+  const spawnAwaitWorker = async (
+    ctx: unknown,
+    type: string,
+    prompt: string,
+    desc: string,
+    signal: AbortSignal,
+    setS: (s?: string) => void,
+  ): Promise<{ status: string; result: string } | undefined> => {
     const mgr = subagentManager();
     if (!mgr) return undefined;
-    return mgr.spawn(pi, ctx, type, prompt, {
-      description: desc,
-      isBackground: true, // non-blocking — session stays live and inspectable
-      onToolActivity: (a) => { if (a.type === "start" && a.toolName) ctx.ui.setStatus?.("wb-run", `${desc}: ${a.toolName}…`); },
-    });
-  };
-
-  const finishRun = (reason: string) => {
-    const run = implRun;
-    const ctx = sessionCtx;
-    implRun = undefined;
-    if (!ctx) return;
-    void bd(ctx.cwd, ["sync"]);
-    ctx.ui.setStatus?.("wb-run", undefined);
-    const bad = run?.results.some((r) => r.startsWith("✗"));
-    ctx.ui.notify(`wb-implement finished (${reason})${run ? ` [${run.label}]` : ""}: ${run?.results.join("  ") || "no tasks"}`, bad ? "warning" : "info");
-  };
-
-  const advanceRun = async () => {
-    const run = implRun;
-    const ctx = sessionCtx;
-    if (!run || !ctx) return;
-    if (run.stopping) return finishRun("stopped by user");
-    const next = selectNextReady(await readyLeaves(ctx.cwd, run.closure, run.parents), run.attempted);
-    if (!next) return finishRun("done");
-    run.attempted.add(next.id);
-    await bd(ctx.cwd, ["update", next.id, "--status", "in_progress"]);
-    const agentId = spawnWorker(ctx, "wb-implementer", implPrompt(next), `impl ${next.id}`);
-    if (!agentId) return finishRun("no subagent manager");
-    run.active = { taskId: next.id, title: next.title, phase: "impl", agentId, retried: false, work: "" };
-    ctx.ui.notify(`wb-implement: ${next.id} (${run.results.length} done)`, "info");
-  };
-
-  // Drive the impl→verify→close/retry/fail→next chain on each worker completion.
-  const onWorkerEvent = async (payload: unknown) => {
-    const run = implRun;
-    const ctx = sessionCtx;
-    if (!run?.active || !ctx) return;
-    const p = (payload ?? {}) as { id?: string; result?: string; status?: string };
-    if (p.id !== run.active.agentId) return; // not the worker we're awaiting
-    const active = run.active;
-    run.active = undefined;
-    if (p.status === "stopped") return finishRun(`worker stopped at ${active.taskId}`); // user intervened via /agents
-    const result = p.result ?? "";
-    if (active.phase === "impl") {
-      const agentId = spawnWorker(ctx, "wb-verifier", verifyPrompt(active, result), `verify ${active.taskId}`);
-      if (agentId) { run.active = { ...active, phase: "verify", agentId, work: result }; return; }
-      await bd(ctx.cwd, ["update", active.taskId, "--status", "open"]); run.results.push(`✗ ${active.taskId}`);
-    } else {
-      const decision = decideNext("verify", parseVerdict(result), active.retried);
-      if (decision === "close") { await bd(ctx.cwd, ["close", active.taskId]); run.results.push(`✓ ${active.taskId}`); }
-      else if (decision === "retry") {
-        const agentId = spawnWorker(ctx, "wb-implementer", implPrompt(active, result), `impl ${active.taskId} (retry)`);
-        if (agentId) { run.active = { ...active, phase: "impl", agentId, retried: true, work: "" }; return; }
-        await bd(ctx.cwd, ["update", active.taskId, "--status", "open"]); run.results.push(`✗ ${active.taskId}`);
-      } else { await bd(ctx.cwd, ["update", active.taskId, "--status", "open"]); run.results.push(`✗ ${active.taskId}`); }
+    let id: string;
+    try {
+      id = mgr.spawn(pi, ctx, type, prompt, {
+        description: desc,
+        isBackground: true, // non-blocking — the session stays live (/agents works mid-run)
+        signal,
+        onToolActivity: (a) => {
+          if (a.type === "start" && a.toolName) setS(`${desc}: ${a.toolName}…`);
+        },
+      });
+    } catch {
+      return undefined; // e.g. assertValidSpawnCwd — caller halts the run cleanly
     }
-    await advanceRun();
+    try {
+      await mgr.getRecord(id)?.promise;
+    } catch {
+      /* terminal status reflects the failure */
+    }
+    const rec = mgr.getRecord(id);
+    return { status: rec?.status ?? "error", result: rec?.result ?? "" };
   };
-  (pi as { events?: { on?: (e: string, h: (p: unknown) => void) => void } }).events?.on?.("subagents:completed", onWorkerEvent);
-  (pi as { events?: { on?: (e: string, h: (p: unknown) => void) => void } }).events?.on?.("subagents:failed", onWorkerEvent);
+
+  // Deterministic context provisioning: replace-mode subagents never see AGENTS.md
+  // (pi-subagents suppresses context files), so the orchestrator hands every worker
+  // the project rules, the runbook (how to run tests HERE), and the full task detail.
+  const buildRunContext = (cwd: string, tasksMdRel?: string) => {
+    const readIf = (p: string) => (existsSync(join(cwd, p)) ? readFileSync(join(cwd, p), "utf-8") : undefined);
+    let pkgTestScript = false;
+    try {
+      const pkg = JSON.parse(readIf("package.json") ?? "{}") as { scripts?: { test?: unknown } };
+      pkgTestScript = typeof pkg.scripts?.test === "string";
+    } catch {
+      /* unparseable package.json → no test script */
+    }
+    const fm = tasksMdRel ? readIf(tasksMdRel) : undefined;
+    const testCommand = detectTestCommand({
+      explicit: fm ? extractTestCommandFromFrontmatter(fm) : undefined,
+      mise: ["mise.toml", ".mise.toml", ".tool-versions"].some((f) => existsSync(join(cwd, f))),
+      gemfile: existsSync(join(cwd, "Gemfile")),
+      specDir: existsSync(join(cwd, "spec")),
+      pkgTestScript,
+    });
+    let agentsMd: { path: string; content?: string } | undefined;
+    for (const f of ["AGENTS.md", "CLAUDE.md"]) {
+      const content = readIf(f);
+      if (content !== undefined) {
+        agentsMd = content.length <= 4000 ? { path: f, content } : { path: f };
+        break;
+      }
+    }
+    return { testCommand, agentsMd, planDir: tasksMdRel ? dirname(tasksMdRel) : undefined };
+  };
 
   pi.registerTool({
     name: "wb_ping",
@@ -287,13 +289,22 @@ export default function workbenchPi(pi: ExtensionAPI) {
       const researchPath = join(plansRootOf(ctx.cwd), planDir, "research.md");
 
       const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-research", s);
+      // Await each spawned record's own promise (never waitForAll — that would also
+      // wait on any background /wb-implement workers and hang this command mid-run).
+      const awaitRecord = async (id: string) => {
+        try {
+          await mgr.getRecord(id)?.promise;
+        } catch {
+          /* terminal status/result reflect the failure */
+        }
+        return mgr.getRecord(id)?.result ?? "";
+      };
       try {
         setStatus("locating…");
         const locId = mgr.spawn(pi, ctx, "wb-locator",
           `Topic: ${topic}\nFind the files and directories in this repo relevant to this topic.`,
           { description: `locate: ${topic}` });
-        await mgr.waitForAll();
-        const locator = mgr.getRecord(locId)?.result ?? "";
+        const locator = await awaitRecord(locId);
 
         setStatus("analyzing…");
         const anId = mgr.spawn(pi, ctx, "wb-analyzer",
@@ -302,9 +313,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
         const paId = mgr.spawn(pi, ctx, "wb-pattern",
           `Concept: ${topic}\nFind existing patterns/conventions for this, with cited examples. Relevant locations:\n${locator}`,
           { description: `patterns: ${topic}` });
-        await mgr.waitForAll();
-        const analyzer = mgr.getRecord(anId)?.result ?? "";
-        const pattern = mgr.getRecord(paId)?.result ?? "";
+        const [analyzer, pattern] = await Promise.all([awaitRecord(anId), awaitRecord(paId)]);
 
         const body = assembleResearchBody(topic, [
           { heading: "Locations (wb-locator)", body: locator },
@@ -445,10 +454,9 @@ export default function workbenchPi(pi: ExtensionAPI) {
   pi.registerCommand("wb-implement", {
     description: "Start an autonomous, observable, steerable implement loop over a target's subtree. Arg [target] = epic id | tasks.md path | substring.",
     handler: async (args, ctx) => {
-      sessionCtx = ctx as unknown as WbCtx; // background events use this
-      if (implRun) {
-        const a = implRun.active;
-        ctx.ui.notify(`wb-implement already running [${implRun.label}] — ${implRun.results.length} done${a ? `, now ${a.phase} ${a.taskId}` : ""}. /wb-status, /wb-stop, or /agents.`, "warning");
+      if (activeRun) {
+        const v = activeRun.view();
+        ctx.ui.notify(`wb-implement already running [${v.label}] — ${v.done.length} done${v.current ? `, now ${v.current.phase} ${v.current.taskId}` : ""}. /wb-status, /wb-stop, or /agents.`, "warning");
         return;
       }
       if (!subagentManager()) { ctx.ui.notify("wb-implement needs @tintinweb/pi-subagents + /wb-setup.", "error"); return; }
@@ -459,6 +467,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
       const arg = (args ?? "").trim();
       let root: string | undefined;
       let label = arg || "current plan";
+      let tasksMdRel: string | undefined;
       if (arg && isBeadId(arg) && (await bd(ctx.cwd, ["show", arg, "--json"])).code === 0) {
         root = arg;
         label = `target ${arg}`;
@@ -473,55 +482,98 @@ export default function workbenchPi(pi: ExtensionAPI) {
           ctx.ui.notify(`Multiple plans match${arg ? ` "${arg}"` : ""}: ${matches.join(", ")}. Re-run with a specific path, substring, or the epic id.`, "warning");
           return;
         }
-        label = dirname(matches[0]);
-        root = extractEpicId(readFileSync(join(ctx.cwd, matches[0]), "utf-8"));
+        tasksMdRel = matches[0];
+        label = dirname(tasksMdRel);
+        root = extractEpicId(readFileSync(join(ctx.cwd, tasksMdRel), "utf-8"));
         if (!root) {
-          ctx.ui.notify(`No beads epic in ${matches[0]} (looked for \`beads_epic:\` frontmatter or \`Epic: …\` body). Run /wb-execution or pass the epic id.`, "warning");
+          ctx.ui.notify(`No beads epic in ${tasksMdRel} (looked for \`beads_epic:\` frontmatter or \`Epic: …\` body). Run /wb-execution or pass the epic id.`, "warning");
           return;
         }
       }
+      const rootId = root;
 
       ctx.ui.setStatus?.("wb-run", "scoping…");
-      const { closure, parents } = await computeScope(ctx.cwd, root);
+      let scope = await computeScope(ctx.cwd, rootId);
+      const runCtx = buildRunContext(ctx.cwd, tasksMdRel);
       ctx.ui.setStatus?.("wb-run", undefined);
-      const first = selectNextReady(await readyLeaves(ctx.cwd, closure, parents), new Set());
-      if (!first) {
-        ctx.ui.notify(`No ready leaf tasks for ${label} (${root}; ${closure.size} in scope). All done/blocked, only umbrellas left, or run /wb-execution.`, "info");
+      if ((await readyLeaves(ctx.cwd, scope.closure, scope.parents)).length === 0) {
+        ctx.ui.notify(`No ready leaf tasks for ${label} (${rootId}; ${scope.closure.size} in scope). All done/blocked, only umbrellas left, or run /wb-execution.`, "info");
         return;
       }
 
-      implRun = { root, label, closure, parents, attempted: new Set([first.id]), results: [], stopping: false };
-      await bd(ctx.cwd, ["update", first.id, "--status", "in_progress"]);
-      const agentId = spawnWorker(sessionCtx, "wb-implementer", implPrompt(first), `impl ${first.id}`);
-      if (!agentId) { implRun = undefined; ctx.ui.notify("wb-implement: failed to spawn worker.", "error"); return; }
-      implRun.active = { taskId: first.id, title: first.title, phase: "impl", agentId, retried: false, work: "" };
-      ctx.ui.notify(`wb-implement started [${label}] — autonomous, working ${first.id}. Observe: /agents or /wb-status. Halt: /wb-stop.`, "info");
+      // Snapshot everything the run needs at START — no module-level session ctx.
+      const cwd = ctx.cwd;
+      const startCtx = ctx;
+      const setS = (s?: string) => startCtx.ui.setStatus?.("wb-run", s);
+      const abort = new AbortController();
+      // Full bead detail + runbook + project rules for every worker (context pack).
+      const packFor = async (t: ReadyIssue) => {
+        const detail = parseBeadDetail((await bd(cwd, ["show", t.id, "--json"])).stdout) ?? { id: t.id, title: t.title };
+        return buildContextPack({ task: detail, testCommand: runCtx.testCommand, agentsMd: runCtx.agentsMd, planDir: runCtx.planDir });
+      };
+
+      const run = startImplementRun(
+        {
+          bd: (a) => bd(cwd, a),
+          ready: () => readyLeaves(cwd, scope.closure, scope.parents),
+          refreshScope: async () => {
+            scope = await computeScope(cwd, rootId);
+          },
+          spawnAwait: (type, prompt, desc) => spawnAwaitWorker(startCtx, type, prompt, desc, abort.signal, setS),
+          notify: (m, l) => startCtx.ui.notify(m, l as "info"),
+          setStatus: setS,
+          buildImplPrompt: async (t, feedback) =>
+            `${await packFor(t)}\n\n## Instruction\nImplement this task and ONLY this task, strict TDD (failing test first).` +
+            (feedback ? `\n\nA previous attempt FAILED verification:\n${feedback}\nFix those specific problems.` : ""),
+          buildVerifyPrompt: async (t, work) =>
+            `${await packFor(t)}\n\n## Instruction\nVerify the work just done for this task: run the tests` +
+            `${runCtx.testCommand ? ` with \`${runCtx.testCommand}\`` : ""} and check scope. Worker report:\n${work}`,
+        },
+        label,
+      );
+      activeRun = run;
+      activeRunAbort = abort;
+      implementMode = true; // arm the parent-session discipline gates for the run's duration
+      void run.finished.finally(() => {
+        if (activeRun === run) {
+          activeRun = undefined;
+          activeRunAbort = undefined;
+        }
+        implementMode = false;
+      });
+      ctx.ui.notify(`wb-implement started [${label}]${runCtx.testCommand ? ` (tests: ${runCtx.testCommand})` : ""} — autonomous. Observe: /wb-status, /agents. Halt: /wb-stop.`, "info");
     },
   });
 
   pi.registerCommand("wb-stop", {
-    description: "Halt the running /wb-implement loop after the current task (hard-stop a worker via /agents)",
-    handler: async (_args, ctx) => {
-      if (!implRun) {
+    description: "Halt the running /wb-implement loop after the current task; `/wb-stop now` also aborts the current worker",
+    handler: async (args, ctx) => {
+      if (!activeRun) {
         ctx.ui.notify("No wb-implement run in progress.", "info");
         return;
       }
-      implRun.stopping = true;
-      ctx.ui.notify(`Stopping wb-implement after ${implRun.active?.taskId ?? "the current task"}. Hard-stop the worker now via /agents.`, "info");
+      activeRun.stop();
+      if ((args ?? "").trim() === "now") {
+        activeRunAbort?.abort();
+        ctx.ui.notify("Stopping wb-implement NOW — current worker aborted; its task will be reopened.", "info");
+        return;
+      }
+      const v = activeRun.view();
+      ctx.ui.notify(`Stopping wb-implement after ${v.current?.taskId ?? "the current task"}. Use \`/wb-stop now\` (or /agents) to abort the in-flight worker too.`, "info");
     },
   });
 
   pi.registerCommand("wb-status", {
     description: "Show the running /wb-implement loop's progress",
     handler: async (_args, ctx) => {
-      if (!implRun) {
+      if (!activeRun) {
         ctx.ui.notify("No wb-implement run in progress.", "info");
         return;
       }
-      const a = implRun.active;
+      const v = activeRun.view();
       ctx.ui.notify(
-        `wb-implement [${implRun.label}]: ${implRun.results.length} done (${implRun.results.join(" ") || "—"})` +
-          `${a ? `; now ${a.phase} ${a.taskId}${a.retried ? " (retry)" : ""}` : ""}${implRun.stopping ? "; stopping…" : ""}`,
+        `wb-implement [${v.label}]: ${v.done.length} done (${v.done.join(" ") || "—"})` +
+          `${v.current ? `; now ${v.current.phase} ${v.current.taskId}${v.current.attempt > 1 ? " (retry)" : ""}` : ""}${v.stopping ? "; stopping…" : ""}`,
         "info",
       );
     },
@@ -614,13 +666,17 @@ export default function workbenchPi(pi: ExtensionAPI) {
   // Keep the resolved tier current as the model is (re)selected.
   pi.on("session_start", async (_event, ctx) => {
     tier = resolveTier(ctx.model?.id);
-    sessionCtx = ctx as unknown as WbCtx; // durable ctx for background /wb-implement events
+  });
+
+  // Don't leave an autonomous run driving beads after the session goes away.
+  pi.on("session_shutdown", async () => {
+    activeRun?.stop();
+    activeRunAbort?.abort();
   });
 
   // Inject the tier-appropriate workflow instructions.
   pi.on("before_agent_start", async (event, ctx) => {
     tier = resolveTier(ctx.model?.id);
-    sessionCtx ??= ctx as unknown as WbCtx;
     return { systemPrompt: `${event.systemPrompt}\n\n${systemPromptFragment(tier)}\n` };
   });
 

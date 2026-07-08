@@ -48,17 +48,6 @@ export function selectNextReady(issues: ReadyIssue[], attempted: Set<string>): R
   return issues.find((i) => !attempted.has(i.id));
 }
 
-/**
- * The coordinator's per-worker-completion decision (pure). After an implementer
- * completes we verify; after a verifier completes we close on PASS, retry once on
- * not-PASS, then fail. Drives the event-driven autonomous loop.
- */
-export function decideNext(phase: "impl" | "verify", verdict: Verdict, retried: boolean): "verify" | "close" | "retry" | "fail" {
-  if (phase === "impl") return "verify";
-  if (verdict === "PASS") return "close";
-  return retried ? "fail" : "retry";
-}
-
 /** Read the verifier's verdict; the "Verdict" section is authoritative, FAIL wins. */
 export function parseVerdict(text: string): Verdict {
   const idx = text.toLowerCase().lastIndexOf("verdict");

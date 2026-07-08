@@ -34,8 +34,8 @@ export interface CoordinatorDeps {
   spawnAwait(type: "wb-implementer" | "wb-verifier", prompt: string, desc: string): Promise<WorkerResult | undefined>;
   notify(msg: string, level: string): void;
   setStatus(s?: string): void;
-  buildImplPrompt(task: ReadyIssue, feedback?: string): string;
-  buildVerifyPrompt(task: ReadyIssue, work: string): string;
+  buildImplPrompt(task: ReadyIssue, feedback?: string): string | Promise<string>;
+  buildVerifyPrompt(task: ReadyIssue, work: string): string | Promise<string>;
 }
 
 export const HARD_CAP = 100; // runaway backstop on tasks attempted per run
@@ -67,7 +67,7 @@ export function startImplementRun(deps: CoordinatorDeps, label: string): RunHand
     for (let attempt = 1; attempt <= 2; attempt++) {
       current = { taskId: task.id, phase: "impl", attempt };
       deps.setStatus(`impl ${task.id}${attempt > 1 ? " (retry)" : ""}…`);
-      const impl = await deps.spawnAwait("wb-implementer", deps.buildImplPrompt(task, feedback), `impl ${task.id}`);
+      const impl = await deps.spawnAwait("wb-implementer", await deps.buildImplPrompt(task, feedback), `impl ${task.id}`);
       if (!impl) return { kind: "halt", reason: "could not spawn worker" };
       if (impl.status === "stopped") return { kind: "halt", reason: `worker for ${task.id} stopped by user` };
       if (impl.status !== "completed" && impl.status !== "steered") {
@@ -78,7 +78,7 @@ export function startImplementRun(deps: CoordinatorDeps, label: string): RunHand
 
       current = { taskId: task.id, phase: "verify", attempt };
       deps.setStatus(`verify ${task.id}…`);
-      const ver = await deps.spawnAwait("wb-verifier", deps.buildVerifyPrompt(task, impl.result), `verify ${task.id}`);
+      const ver = await deps.spawnAwait("wb-verifier", await deps.buildVerifyPrompt(task, impl.result), `verify ${task.id}`);
       if (!ver) return { kind: "halt", reason: "could not spawn verifier" };
       if (ver.status === "stopped") return { kind: "halt", reason: `verifier for ${task.id} stopped by user` };
       if (ver.status !== "completed" && ver.status !== "steered") {
