@@ -137,7 +137,9 @@ workbench-pi/
   src/
     index.ts                   # factory: wires tools, commands, hooks; reads tier
     tier.ts                    # WORKBENCH_TIER = small | capable  (the switch)
-    orchestrator.ts            # small-tier state machine: drives subagents step-by-step
+    orchestrator.ts            # small-tier research/design assembly helpers
+    coordinator.ts             # /wb-implement run loop (DI, promise-based, unit-tested)
+    context-pack.ts            # deterministic worker context: bead detail + runbook + AGENTS.md
     tools/
       scaffold-project.ts      # pure: create docs/plans/… tree + templated frontmatter
       verify-paths.ts          # pure core + pi wrapper: ground paths vs `git ls-files`
@@ -209,6 +211,20 @@ Each phase ships with automatic validation runnable via `scripts/validate.sh`.
 
 Checkpoint cadence: proceed autonomously; **hard stop at Phase 3** (the qwen
 proof-of-concept) for human review.
+
+### Post-MVP hardening (from the Fable-5 code review + real reef usage)
+
+- **Coordinator rework:** /wb-implement's loop moved from an event-bus state machine
+  to a **promise-based, dependency-injected coordinator** (`src/coordinator.ts`,
+  unit-tested via fakes) after a 8-finder/5-verifier review confirmed status
+  mishandling, cross-command waitForAll hangs, stale module-ctx corruption, dropped
+  HARD_CAP, and stranded beads. All fixed; runAgent/wb-research now await their own
+  record promise.
+- **Context provisioning principle:** the orchestration layer owns worker context as
+  deterministically as it owns sequencing. `src/context-pack.ts` hands every worker
+  the full bead detail, the detected runbook (test command — mise/bundler/npm, or
+  tasks.md `test_command:`), AGENTS.md (pi-subagents suppresses context files for
+  replace-mode agents — workers otherwise can't learn "use mise"), and plan pointers.
 
 ### Deferred / backlog
 
