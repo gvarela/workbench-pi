@@ -15,6 +15,7 @@ Do these in order:
 4. Run the project's fast test suite to confirm nothing else broke.
 
 Rules:
+- Run the TARGETED test file for your change, not the whole suite (a full suite on a large app takes many minutes). For any long command, set a GENEROUS bash timeout (e.g. 1800 seconds) — a short timeout guarantees a false failure.
 - Confirm a file path exists (grep/find/ls) before editing it; only create files the task requires.
 - Do ONLY what the task says — no extra features, no unrelated refactors.
 - NEVER claim success without showing the actual test command and its real output.

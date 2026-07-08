@@ -299,43 +299,47 @@ export default function workbenchPi(pi: ExtensionAPI) {
         }
         return mgr.getRecord(id)?.result ?? "";
       };
-      try {
-        setStatus("locating…");
-        const locId = mgr.spawn(pi, ctx, "wb-locator",
-          `Topic: ${topic}\nFind the files and directories in this repo relevant to this topic.`,
-          { description: `locate: ${topic}` });
-        const locator = await awaitRecord(locId);
+      // Detached: the session stays live (/agents works) while the agents research.
+      void (async () => {
+        try {
+          setStatus("locating…");
+          const locId = mgr.spawn(pi, ctx, "wb-locator",
+            `Topic: ${topic}\nFind the files and directories in this repo relevant to this topic.`,
+            { description: `locate: ${topic}` });
+          const locator = await awaitRecord(locId);
 
-        setStatus("analyzing…");
-        const anId = mgr.spawn(pi, ctx, "wb-analyzer",
-          `Topic: ${topic}\nAnalyze how the following code works, with file:line refs. Relevant locations:\n${locator}`,
-          { description: `analyze: ${topic}` });
-        const paId = mgr.spawn(pi, ctx, "wb-pattern",
-          `Concept: ${topic}\nFind existing patterns/conventions for this, with cited examples. Relevant locations:\n${locator}`,
-          { description: `patterns: ${topic}` });
-        const [analyzer, pattern] = await Promise.all([awaitRecord(anId), awaitRecord(paId)]);
+          setStatus("analyzing…");
+          const anId = mgr.spawn(pi, ctx, "wb-analyzer",
+            `Topic: ${topic}\nAnalyze how the following code works, with file:line refs. Relevant locations:\n${locator}`,
+            { description: `analyze: ${topic}` });
+          const paId = mgr.spawn(pi, ctx, "wb-pattern",
+            `Concept: ${topic}\nFind existing patterns/conventions for this, with cited examples. Relevant locations:\n${locator}`,
+            { description: `patterns: ${topic}` });
+          const [analyzer, pattern] = await Promise.all([awaitRecord(anId), awaitRecord(paId)]);
 
-        const body = assembleResearchBody(topic, [
-          { heading: "Locations (wb-locator)", body: locator },
-          { heading: "How it works (wb-analyzer)", body: analyzer },
-          { heading: "Existing patterns (wb-pattern)", body: pattern },
-        ]);
+          const body = assembleResearchBody(topic, [
+            { heading: "Locations (wb-locator)", body: locator },
+            { heading: "How it works (wb-analyzer)", body: analyzer },
+            { heading: "Existing patterns (wb-pattern)", body: pattern },
+          ]);
 
-        // In-pipeline validation: ground cited paths and flag hallucinations (qwen's #1 failure).
-        setStatus("validating citations…");
-        const { real, missing } = groundPaths(extractCitedPaths(body), await gitUniverse(ctx.cwd));
-        const validated = annotateUngrounded(body, missing.map((m) => m.path));
+          // In-pipeline validation: ground cited paths and flag hallucinations (qwen's #1 failure).
+          setStatus("validating citations…");
+          const { real, missing } = groundPaths(extractCitedPaths(body), await gitUniverse(ctx.cwd));
+          const validated = annotateUngrounded(body, missing.map((m) => m.path));
 
-        const existing = existsSync(researchPath) ? readFileSync(researchPath, "utf-8") : "";
-        writeFileSync(researchPath, setStatusAndReplaceBody(existing, "in-progress", validated), "utf-8");
-        setStatus(undefined);
-        const cited = real.length + missing.length;
-        const note = cited ? ` ${real.length}/${cited} citations grounded${missing.length ? `, ${missing.length} flagged unverified` : ""}.` : "";
-        ctx.ui.notify(`research.md → docs/plans/${planDir}/research.md.${note} Review & refine.`, missing.length ? "warning" : "info");
-      } catch (e) {
-        setStatus(undefined);
-        ctx.ui.notify(`wb-research failed: ${e instanceof Error ? e.message : String(e)}`, "error");
-      }
+          const existing = existsSync(researchPath) ? readFileSync(researchPath, "utf-8") : "";
+          writeFileSync(researchPath, setStatusAndReplaceBody(existing, "in-progress", validated), "utf-8");
+          const cited = real.length + missing.length;
+          const note = cited ? ` ${real.length}/${cited} citations grounded${missing.length ? `, ${missing.length} flagged unverified` : ""}.` : "";
+          ctx.ui.notify(`research.md → docs/plans/${planDir}/research.md.${note} Review & refine.`, missing.length ? "warning" : "info");
+        } catch (e) {
+          ctx.ui.notify(`wb-research failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+        } finally {
+          setStatus(undefined);
+        }
+      })();
+      ctx.ui.notify(`wb-research started [${planDir}] — non-blocking; /agents to inspect.`, "info");
     },
   });
 
@@ -365,22 +369,26 @@ export default function workbenchPi(pi: ExtensionAPI) {
         return;
       }
       const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-design", s);
-      try {
-        setStatus("gathering context…");
-        const pattern = await runAgent(mgr, ctx, "wb-pattern", `Concept: ${topic}\nFind existing patterns/conventions relevant to designing this.`, `design ctx: ${topic}`);
-        const analyzer = await runAgent(mgr, ctx, "wb-analyzer", `Topic: ${topic}\nExplain how the most relevant existing code works (constraints a design must respect).`, `design ctx: ${topic}`);
-        const body = assembleDesignDraft(topic, [
-          { heading: "Existing patterns (wb-pattern)", body: pattern },
-          { heading: "How relevant code works (wb-analyzer)", body: analyzer },
-        ]);
-        const existing = existsSync(designPath) ? readFileSync(designPath, "utf-8") : "";
-        writeFileSync(designPath, setStatusAndReplaceBody(existing, "draft", body), "utf-8");
-        setStatus(undefined);
-        ctx.ui.notify(`design.md draft → docs/plans/${planDir}/design.md. Fill the Decisions, then /wb-execution.`, "info");
-      } catch (e) {
-        setStatus(undefined);
-        ctx.ui.notify(`wb-design failed: ${e instanceof Error ? e.message : String(e)}`, "error");
-      }
+      // Detached: the session stays live (/agents works) while context is gathered.
+      void (async () => {
+        try {
+          setStatus("gathering context…");
+          const pattern = await runAgent(mgr, ctx, "wb-pattern", `Concept: ${topic}\nFind existing patterns/conventions relevant to designing this.`, `design ctx: ${topic}`);
+          const analyzer = await runAgent(mgr, ctx, "wb-analyzer", `Topic: ${topic}\nExplain how the most relevant existing code works (constraints a design must respect).`, `design ctx: ${topic}`);
+          const body = assembleDesignDraft(topic, [
+            { heading: "Existing patterns (wb-pattern)", body: pattern },
+            { heading: "How relevant code works (wb-analyzer)", body: analyzer },
+          ]);
+          const existing = existsSync(designPath) ? readFileSync(designPath, "utf-8") : "";
+          writeFileSync(designPath, setStatusAndReplaceBody(existing, "draft", body), "utf-8");
+          ctx.ui.notify(`design.md draft → docs/plans/${planDir}/design.md. Fill the Decisions, then /wb-execution.`, "info");
+        } catch (e) {
+          ctx.ui.notify(`wb-design failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+        } finally {
+          setStatus(undefined);
+        }
+      })();
+      ctx.ui.notify(`wb-design started [${planDir}] — non-blocking; /agents to inspect.`, "info");
     },
   });
 
@@ -525,8 +533,9 @@ export default function workbenchPi(pi: ExtensionAPI) {
             `${await packFor(t)}\n\n## Instruction\nImplement this task and ONLY this task, strict TDD (failing test first).` +
             (feedback ? `\n\nA previous attempt FAILED verification:\n${feedback}\nFix those specific problems.` : ""),
           buildVerifyPrompt: async (t, work) =>
-            `${await packFor(t)}\n\n## Instruction\nVerify the work just done for this task: run the tests` +
-            `${runCtx.testCommand ? ` with \`${runCtx.testCommand}\`` : ""} and check scope. Worker report:\n${work}`,
+            `${await packFor(t)}\n\n## Instruction\nVerify the work just done for this task: run the SPECS RELEVANT to the change` +
+            `${runCtx.testCommand ? ` (\`${runCtx.testCommand} <spec files>\`)` : ""} — not the whole suite — and check scope. ` +
+            `Set a generous bash timeout on any long run. Worker report:\n${work}`,
         },
         label,
       );
@@ -579,35 +588,51 @@ export default function workbenchPi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("wb-validate", {
-    description: "Validate the implementation against the plan (runs tests + verifier, writes validation.md)",
-    handler: async (_args, ctx) => {
-      implementMode = false; // validation disarms the implement gates
+    description: "Validate the implementation against a plan (verifier agent, non-blocking). Arg [plan] = tasks.md path or substring.",
+    handler: async (args, ctx) => {
       const mgr = subagentManager();
       if (!mgr) {
         ctx.ui.notify("wb-validate needs @tintinweb/pi-subagents + /wb-setup.", "error");
         return;
       }
-      const planDir = findPlanDir(ctx.cwd);
-      if (!planDir) {
-        ctx.ui.notify("No plan found under docs/plans/. Run /wb-project first.", "warning");
+      // Plans are discovered repo-wide (not just docs/plans/ — reef uses .project_docs/).
+      const arg = (args ?? "").trim();
+      const matches = matchTasksPaths(discoverTasksPaths(await gitUniverse(ctx.cwd)), arg);
+      if (matches.length !== 1) {
+        ctx.ui.notify(
+          matches.length === 0
+            ? (arg ? `No plan matches "${arg}".` : "No plan found.") + " Run /wb-project + /wb-execution first."
+            : `Multiple plans match: ${matches.join(", ")}. Pass a path or substring.`,
+          "warning",
+        );
         return;
       }
+      const planDir = dirname(matches[0]);
+      const runCtx = buildRunContext(ctx.cwd, matches[0]);
+      const testHint = runCtx.testCommand
+        ? `Run tests with \`${runCtx.testCommand}\` — targeted spec files first; if you run anything long, set a GENEROUS bash timeout (e.g. 1800s), never a short one.`
+        : "Discover the test command from AGENTS.md/README before running anything; prefer targeted spec files and set generous timeouts on long runs.";
       const setStatus = (s: string | undefined) => ctx.ui.setStatus?.("wb-validate", s);
-      try {
-        setStatus("validating…");
-        const report = await runAgent(mgr, ctx, "wb-verifier",
-          `Validate this project against its plan in docs/plans/${planDir}/tasks.md. ` +
-            `Run the full fast test suite, confirm the planned tasks are actually implemented, and report PASS/FAIL with evidence.`,
-          "validate");
-        const verdict = parseVerdict(report);
-        const path = join(plansRootOf(ctx.cwd), planDir, "validation.md");
-        writeFileSync(path, `# Validation: ${planDir}\n\nVerdict: ${verdict}\n\n${report}\n`, "utf-8");
-        setStatus(undefined);
-        ctx.ui.notify(`wb-validate: ${verdict} → docs/plans/${planDir}/validation.md`, verdict === "PASS" ? "info" : "warning");
-      } catch (e) {
-        setStatus(undefined);
-        ctx.ui.notify(`wb-validate failed: ${e instanceof Error ? e.message : String(e)}`, "error");
-      }
+
+      // Detached: the session stays live (/agents works) while validation runs.
+      void (async () => {
+        try {
+          setStatus("validating…");
+          const report = await runAgent(mgr, ctx, "wb-verifier",
+            `Validate this project against its plan in ${matches[0]}. ${testHint} ` +
+              `Confirm the planned tasks are actually implemented and report PASS/FAIL with evidence.`,
+            "validate");
+          const verdict = parseVerdict(report);
+          const path = join(ctx.cwd, planDir, "validation.md");
+          writeFileSync(path, `# Validation: ${planDir}\n\nVerdict: ${verdict}\n\n${report}\n`, "utf-8");
+          ctx.ui.notify(`wb-validate: ${verdict} → ${planDir}/validation.md`, verdict === "PASS" ? "info" : "warning");
+        } catch (e) {
+          ctx.ui.notify(`wb-validate failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+        } finally {
+          setStatus(undefined);
+        }
+      })();
+      ctx.ui.notify(`wb-validate started [${planDir}] — non-blocking; /agents to inspect, result lands in validation.md.`, "info");
     },
   });
 

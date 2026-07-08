@@ -84,6 +84,7 @@ export function buildContextPack(i: ContextPackInput): string {
     i.testCommand
       ? `Run tests with: \`${i.testCommand}\` (append a file path to run a single spec). Use this EXACT command — do not improvise another way.`
       : "Test command unknown — check AGENTS.md / README / CI config to discover it BEFORE running tests.",
+    "Run TARGETED spec files for the code you touched — the full suite may take many minutes. If you must run a long command, set a GENEROUS bash timeout (e.g. 1800 seconds); a short timeout on a test suite guarantees a false failure.",
   );
   if (i.agentsMd) {
     parts.push(
