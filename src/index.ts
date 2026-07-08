@@ -29,6 +29,7 @@ import { parseReadyIssues, parseVerdict, selectNextReady } from "./implement.js"
 interface SpawnOpts {
   description: string;
   onToolActivity?: (a: { type: string; toolName?: string }) => void;
+  signal?: AbortSignal;
 }
 interface SubagentManager {
   spawn(pi: unknown, ctx: unknown, type: string, prompt: string, options: SpawnOpts): string;
@@ -68,6 +69,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
     const setS = (ctx as { ui?: { setStatus?: (id: string, s?: string) => void } })?.ui?.setStatus;
     const id = mgr.spawn(pi, ctx, type, prompt, {
       description: desc,
+      signal: (ctx as { signal?: AbortSignal }).signal, // Esc/abort stops the worker too
       onToolActivity: (a) => {
         if (a.type === "start" && a.toolName) setS?.("wb-agent", `${desc}: ${a.toolName}…`);
       },
@@ -435,6 +437,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
         // by a close get picked up; `attempted` stops a failed-but-still-ready task from
         // looping forever; HARD_CAP is the runaway backstop.
         while (attempted.size < HARD_CAP) {
+          if (ctx.signal?.aborted) break; // Esc/interrupt stops the loop between tasks
           const task = selectNextReady(await readyForPlan(), attempted);
           if (!task) break; // dry — no ready work left in this plan's epic
           attempted.add(task.id);
