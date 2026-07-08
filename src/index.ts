@@ -397,12 +397,11 @@ export default function workbenchPi(pi: ExtensionAPI) {
         ctx.ui.notify("No plan found under docs/plans/. Run /wb-project first.", "warning");
         return;
       }
-      const bd = async (a: string[]) => pi.exec("bd", a, { cwd: ctx.cwd, timeout: 10_000 }).catch(() => ({ code: 1, stdout: "", stderr: "bd not found", killed: false }));
-      if ((await bd(["version"])).code !== 0) {
+      if ((await bd(ctx.cwd, ["version"])).code !== 0) {
         ctx.ui.notify("beads CLI (bd) not found. Install bd to use /wb-execution.", "error");
         return;
       }
-      if ((await bd(["where"])).code !== 0) {
+      if ((await bd(ctx.cwd, ["where"])).code !== 0) {
         ctx.ui.notify("beads not initialized here. Run `bd init` (or /beads:init) first.", "warning");
         return;
       }
@@ -438,7 +437,7 @@ export default function workbenchPi(pi: ExtensionAPI) {
         const tasksPath = join(plansRootOf(ctx.cwd), planDir, "tasks.md");
         const existing = existsSync(tasksPath) ? readFileSync(tasksPath, "utf-8") : "";
         writeFileSync(tasksPath, setStatusAndReplaceBody(existing, "in-progress", assembleTasksBody(epicTitle, phases, res.refToId)), "utf-8");
-        await bd(["sync"]);
+        await bd(ctx.cwd, ["sync"]);
         setStatus(undefined);
 
         const issueCount = Object.keys(res.refToId).length - 1;
