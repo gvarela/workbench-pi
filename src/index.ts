@@ -26,8 +26,12 @@ import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
 import { parseReadyIssues, parseVerdict, selectNextReady } from "./implement.js";
 
 /** Minimal view of the @tintinweb/pi-subagents manager exposed via globalThis. */
+interface SpawnOpts {
+  description: string;
+  onToolActivity?: (a: { type: string; toolName?: string }) => void;
+}
 interface SubagentManager {
-  spawn(pi: unknown, ctx: unknown, type: string, prompt: string, options: { description: string }): string;
+  spawn(pi: unknown, ctx: unknown, type: string, prompt: string, options: SpawnOpts): string;
   waitForAll(): Promise<void>;
   getRecord(id: string): { result?: string; error?: string; status: string } | undefined;
 }
@@ -59,8 +63,17 @@ export default function workbenchPi(pi: ExtensionAPI) {
     return pickPlanDir(existsSync(root) ? readdirSync(root) : [], selector);
   };
   const runAgent = async (mgr: SubagentManager, ctx: unknown, type: string, prompt: string, desc: string): Promise<string> => {
-    const id = mgr.spawn(pi, ctx, type, prompt, { description: desc });
+    // Surface the worker's live tool in the status line — otherwise a spawned subagent
+    // runs invisibly (the status line would sit frozen on the task label).
+    const setS = (ctx as { ui?: { setStatus?: (id: string, s?: string) => void } })?.ui?.setStatus;
+    const id = mgr.spawn(pi, ctx, type, prompt, {
+      description: desc,
+      onToolActivity: (a) => {
+        if (a.type === "start" && a.toolName) setS?.("wb-agent", `${desc}: ${a.toolName}…`);
+      },
+    });
     await mgr.waitForAll();
+    setS?.("wb-agent", undefined);
     return mgr.getRecord(id)?.result ?? "";
   };
   // Real repo paths: tracked + untracked-visible. Used for path grounding/validation.
