@@ -78,6 +78,24 @@ export function editFailureTip(tier: Tier, toolName: string, isError: boolean): 
   );
 }
 
+/**
+ * Small-tier compaction instructions: the summarizer IS the small model, and what
+ * it loses under summarization is exactly the working state TDD depends on. Pin it.
+ * Capable models summarize well — undefined leaves pi's default prompt untouched.
+ */
+export function compactionPreserveInstructions(tier: Tier): string | undefined {
+  if (tier !== "small") return undefined;
+  return (
+    "Preserve VERBATIM in the summary, as a short list:\n" +
+    "1. The current task — id, title, and acceptance criteria.\n" +
+    "2. The EXACT test command for this project.\n" +
+    "3. TDD state — the latest failing test name and its error line (or the last passing summary line).\n" +
+    "4. Every file path created or edited so far.\n" +
+    "5. Any unresolved blocker or verifier feedback.\n" +
+    "FACTS ONLY — no commentary. If an item is not in the conversation, write 'unknown'; NEVER invent values."
+  );
+}
+
 /** Capable-tier /wb-research: instruct the model to research and synthesize research.md itself. */
 export function researchDelegationPrompt(topic: string, planDir: string): string {
   return (

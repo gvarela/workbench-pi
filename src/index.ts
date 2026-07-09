@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { resolveTier, type Tier } from "./tier.js";
-import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt, editFailureTip } from "./prompts.js";
+import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt, editFailureTip, compactionPreserveInstructions } from "./prompts.js";
 import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
 import { groundPaths, extractCitedPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
@@ -734,6 +734,30 @@ export default function workbenchPi(pi: ExtensionAPI) {
     const replaced = bashBackpressure(tier, cmd, event.isError === true, text);
     if (replaced === undefined) return;
     return { content: [{ type: "text", text: replaced }] };
+  });
+
+  // Small-tier compaction preservation: pi's threshold compaction offers no way to
+  // inject summarizer instructions (SessionBeforeCompactResult is cancel|compaction
+  // only), so cancel it and re-issue a manual compact that carries them. The
+  // re-issued compact re-enters this hook as reason "manual" and passes through —
+  // no loop. Overflow compactions are left alone: cancelling one would break pi's
+  // aborted-turn retry. Capable tier: compactionPreserveInstructions is undefined.
+  pi.on("session_before_compact", async (event, ctx) => {
+    const customInstructions = compactionPreserveInstructions(tier);
+    if (!customInstructions || event.reason !== "threshold") return;
+    // Let the cancelled auto-compaction unwind before re-issuing.
+    setTimeout(() => {
+      try {
+        ctx.compact({
+          customInstructions,
+          onError: () =>
+            ctx.ui?.notify?.("workbench-pi: compaction with preserve-instructions failed; pi will retry with defaults.", "warning"),
+        });
+      } catch {
+        /* next threshold check re-triggers pi's default compaction */
+      }
+    }, 0);
+    return { cancel: true };
   });
 
   // Observe verification runs so the gates know test state.
