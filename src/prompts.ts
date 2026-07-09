@@ -36,6 +36,8 @@ Editing files — edit matches oldText BYTE-FOR-BYTE, and whitespace is the #1 f
 - NEVER use write to change an existing file — it rewrites everything and mangles indentation. write is for NEW files only.
 - On an edit failure, switch to sed by line number — do NOT retry edit with re-typed whitespace.
 
+Command output is auto-elided when large (green test runs collapse to ✓ + summary tail). Run TARGETED commands — a single spec file, grep for the line you need, tail -40 — never cat whole files or run the full suite by default.
+
 Keep outputs short and structured. Fill the templates; don't editorialize.`;
 
 const CAPABLE = `## workbench-pi (tier: capable)
@@ -73,6 +75,24 @@ export function editFailureTip(tier: Tier, toolName: string, isError: boolean): 
     "Do NOT retry edit from memory. Either re-read the exact region and copy ONE line verbatim as oldText, or " +
     "(better for multi-line) switch to sed by line number — whitespace-independent; combine edits into one sed call. " +
     "Never use write to fix an existing file."
+  );
+}
+
+/**
+ * Small-tier compaction instructions: the summarizer IS the small model, and what
+ * it loses under summarization is exactly the working state TDD depends on. Pin it.
+ * Capable models summarize well — undefined leaves pi's default prompt untouched.
+ */
+export function compactionPreserveInstructions(tier: Tier): string | undefined {
+  if (tier !== "small") return undefined;
+  return (
+    "Preserve VERBATIM in the summary, as a short list:\n" +
+    "1. The current task — id, title, and acceptance criteria.\n" +
+    "2. The EXACT test command for this project.\n" +
+    "3. TDD state — the latest failing test name and its error line (or the last passing summary line).\n" +
+    "4. Every file path created or edited so far.\n" +
+    "5. Any unresolved blocker or verifier feedback.\n" +
+    "FACTS ONLY — no commentary. If an item is not in the conversation, write 'unknown'; NEVER invent values."
   );
 }
 

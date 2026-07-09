@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt, editFailureTip } from "../src/prompts.ts";
+import {
+  systemPromptFragment,
+  researchDelegationPrompt,
+  designDelegationPrompt,
+  editFailureTip,
+  compactionPreserveInstructions,
+} from "../src/prompts.ts";
 
 test("SMALL fragment carries qwen-specific editing discipline; capable does not", () => {
   const small = systemPromptFragment("small");
@@ -30,6 +36,24 @@ test("SMALL editing discipline covers the qwen whitespace/write/sed footguns", (
   // the point-of-failure tip steers to sed / flags whitespace
   assert.match(editFailureTip("small", "edit", true) ?? "", /sed/);
   assert.match(editFailureTip("small", "edit", true) ?? "", /whitespace|tab/i);
+});
+
+test("SMALL fragment states the output-backpressure rule; capable stays clean", () => {
+  const small = systemPromptFragment("small");
+  assert.match(small, /elided|collaps/i); // the model is told output shrinks
+  assert.match(small, /targeted/i); // and steered to targeted commands
+  assert.doesNotMatch(systemPromptFragment("capable"), /elided|collaps/i);
+});
+
+test("compaction preserve-instructions pin the TDD state; capable uses pi defaults", () => {
+  const small = compactionPreserveInstructions("small");
+  assert.ok(small !== undefined);
+  assert.match(small, /task/i); // what am I working on
+  assert.match(small, /test command/i); // how do I verify here
+  assert.match(small, /failing test/i); // TDD state (RED/GREEN)
+  assert.match(small, /file path/i); // what have I touched
+  assert.match(small, /never invent|unknown/i); // no hallucinated state
+  assert.equal(compactionPreserveInstructions("capable"), undefined);
 });
 
 test("systemPromptFragment selects the tier-appropriate fragment", () => {

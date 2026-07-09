@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { resolveTier, type Tier } from "./tier.js";
-import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt, editFailureTip } from "./prompts.js";
+import { systemPromptFragment, researchDelegationPrompt, designDelegationPrompt, editFailureTip, compactionPreserveInstructions } from "./prompts.js";
 import { parseProjectArgs, scaffoldProject } from "./tools/scaffold-project.js";
 import { groundPaths, extractCitedPaths } from "./tools/verify-paths.js";
 import { syncAgents, agentsTargetDir } from "./setup.js";
@@ -23,6 +23,8 @@ import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDes
 import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js";
 import { planBeadsTree, createBeadsTree, isBeadId, parseIds } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
+import { bashBackpressure } from "./backpressure.js";
+import { watchdogAction } from "./compaction-watchdog.js";
 import { parseReadyIssues, parseVerdict, type ReadyIssue } from "./implement.js";
 import { startImplementRun, type RunHandle } from "./coordinator.js";
 import { parseBeadDetail, detectTestCommand, extractTestCommandFromFrontmatter, buildContextPack } from "./context-pack.js";
@@ -717,6 +719,58 @@ export default function workbenchPi(pi: ExtensionAPI) {
     const tip = editFailureTip(tier, event.toolName, event.isError);
     if (!tip) return;
     return { content: [...event.content, { type: "text", text: `\n\n${tip}` }] };
+  });
+
+  // Deterministic run-silent (small tier): green verification output collapses to
+  // ✓ + summary tail, oversized output is capped head+tail. The rule lives in code
+  // so context truncation can't drop it and the model can't forget it; the capable
+  // tier is excluded inside bashBackpressure. Runs after the gates hook observes
+  // isError/command (which it reads from the event, not the content).
+  pi.on("tool_result", async (event) => {
+    if (event.toolName !== "bash") return;
+    const cmd = String((event.input as Record<string, unknown>)?.command ?? "");
+    const text = (event.content ?? [])
+      .map((c: { type: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : ""))
+      .join("");
+    const replaced = bashBackpressure(tier, cmd, event.isError === true, text);
+    if (replaced === undefined) return;
+    return { content: [{ type: "text", text: replaced }] };
+  });
+
+  // Small-tier context watchdog: compact proactively at 80% of the window via the
+  // MANUAL compact path, carrying preserve-instructions. pi's threshold machinery is
+  // left untouched as a backstop — a live 50k/32k session showed it can fail silently
+  // (no-op settings band, error-message accounting, oversized summarization request),
+  // so we act before it's needed rather than intercepting it (the previous
+  // cancel+reissue hook risked suppressing compaction if the re-issue was dropped).
+  // At 95% — compactions evidently not landing — escalate to a visible warning:
+  // every failure mode in that incident was silent.
+  let watchdogCompactInFlight = false;
+  pi.on("session_compact", async () => {
+    watchdogCompactInFlight = false;
+  });
+  pi.on("turn_end", async (_event, ctx) => {
+    const usage = ctx.getContextUsage?.();
+    if (!usage) return;
+    const action = watchdogAction(tier, usage.tokens, usage.contextWindow, watchdogCompactInFlight);
+    if (action === undefined) return;
+    const pct = Math.round(((usage.tokens ?? 0) / usage.contextWindow) * 100);
+    if (action === "compact") {
+      watchdogCompactInFlight = true;
+      ctx.ui?.notify?.(`workbench-pi: context at ${pct}% of the window — compacting proactively.`, "info");
+      ctx.compact({
+        customInstructions: compactionPreserveInstructions(tier),
+        onComplete: () => {
+          watchdogCompactInFlight = false;
+        },
+        onError: () => {
+          watchdogCompactInFlight = false;
+          ctx.ui?.notify?.("workbench-pi: proactive compaction failed — context keeps growing. Run /compact or start a fresh session.", "warning");
+        },
+      });
+    } else {
+      ctx.ui?.notify?.(`workbench-pi: context at ${pct}% of the window and compaction is not landing — run /compact or start a fresh session.`, "warning");
+    }
   });
 
   // Observe verification runs so the gates know test state.
