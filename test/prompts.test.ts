@@ -32,6 +32,13 @@ test("SMALL editing discipline covers the qwen whitespace/write/sed footguns", (
   assert.match(editFailureTip("small", "edit", true) ?? "", /whitespace|tab/i);
 });
 
+test("SMALL fragment states the output-backpressure rule; capable stays clean", () => {
+  const small = systemPromptFragment("small");
+  assert.match(small, /elided|collaps/i); // the model is told output shrinks
+  assert.match(small, /targeted/i); // and steered to targeted commands
+  assert.doesNotMatch(systemPromptFragment("capable"), /elided|collaps/i);
+});
+
 test("systemPromptFragment selects the tier-appropriate fragment", () => {
   const small = systemPromptFragment("small");
   const capable = systemPromptFragment("capable");

@@ -36,6 +36,8 @@ Editing files — edit matches oldText BYTE-FOR-BYTE, and whitespace is the #1 f
 - NEVER use write to change an existing file — it rewrites everything and mangles indentation. write is for NEW files only.
 - On an edit failure, switch to sed by line number — do NOT retry edit with re-typed whitespace.
 
+Command output is auto-elided when large (green test runs collapse to ✓ + summary tail). Run TARGETED commands — a single spec file, grep for the line you need, tail -40 — never cat whole files or run the full suite by default.
+
 Keep outputs short and structured. Fill the templates; don't editorialize.`;
 
 const CAPABLE = `## workbench-pi (tier: capable)

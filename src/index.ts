@@ -23,6 +23,7 @@ import { pickPlanDir, assembleResearchBody, setStatusAndReplaceBody, assembleDes
 import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js";
 import { planBeadsTree, createBeadsTree, isBeadId, parseIds } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
+import { bashBackpressure } from "./backpressure.js";
 import { parseReadyIssues, parseVerdict, type ReadyIssue } from "./implement.js";
 import { startImplementRun, type RunHandle } from "./coordinator.js";
 import { parseBeadDetail, detectTestCommand, extractTestCommandFromFrontmatter, buildContextPack } from "./context-pack.js";
@@ -717,6 +718,22 @@ export default function workbenchPi(pi: ExtensionAPI) {
     const tip = editFailureTip(tier, event.toolName, event.isError);
     if (!tip) return;
     return { content: [...event.content, { type: "text", text: `\n\n${tip}` }] };
+  });
+
+  // Deterministic run-silent (small tier): green verification output collapses to
+  // ✓ + summary tail, oversized output is capped head+tail. The rule lives in code
+  // so context truncation can't drop it and the model can't forget it; the capable
+  // tier is excluded inside bashBackpressure. Runs after the gates hook observes
+  // isError/command (which it reads from the event, not the content).
+  pi.on("tool_result", async (event) => {
+    if (event.toolName !== "bash") return;
+    const cmd = String((event.input as Record<string, unknown>)?.command ?? "");
+    const text = (event.content ?? [])
+      .map((c: { type: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : ""))
+      .join("");
+    const replaced = bashBackpressure(tier, cmd, event.isError === true, text);
+    if (replaced === undefined) return;
+    return { content: [{ type: "text", text: replaced }] };
   });
 
   // Observe verification runs so the gates know test state.
