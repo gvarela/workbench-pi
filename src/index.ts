@@ -24,6 +24,7 @@ import { parseTaskPlan, assembleTasksBody, extractEpicId } from "./execution.js"
 import { planBeadsTree, createBeadsTree, isBeadId, parseIds } from "./tools/beads.js";
 import { claimGate, writeGate, isVerificationCommand } from "./gates.js";
 import { bashBackpressure } from "./backpressure.js";
+import { watchdogAction } from "./compaction-watchdog.js";
 import { parseReadyIssues, parseVerdict, type ReadyIssue } from "./implement.js";
 import { startImplementRun, type RunHandle } from "./coordinator.js";
 import { parseBeadDetail, detectTestCommand, extractTestCommandFromFrontmatter, buildContextPack } from "./context-pack.js";
@@ -736,28 +737,40 @@ export default function workbenchPi(pi: ExtensionAPI) {
     return { content: [{ type: "text", text: replaced }] };
   });
 
-  // Small-tier compaction preservation: pi's threshold compaction offers no way to
-  // inject summarizer instructions (SessionBeforeCompactResult is cancel|compaction
-  // only), so cancel it and re-issue a manual compact that carries them. The
-  // re-issued compact re-enters this hook as reason "manual" and passes through —
-  // no loop. Overflow compactions are left alone: cancelling one would break pi's
-  // aborted-turn retry. Capable tier: compactionPreserveInstructions is undefined.
-  pi.on("session_before_compact", async (event, ctx) => {
-    const customInstructions = compactionPreserveInstructions(tier);
-    if (!customInstructions || event.reason !== "threshold") return;
-    // Let the cancelled auto-compaction unwind before re-issuing.
-    setTimeout(() => {
-      try {
-        ctx.compact({
-          customInstructions,
-          onError: () =>
-            ctx.ui?.notify?.("workbench-pi: compaction with preserve-instructions failed; pi will retry with defaults.", "warning"),
-        });
-      } catch {
-        /* next threshold check re-triggers pi's default compaction */
-      }
-    }, 0);
-    return { cancel: true };
+  // Small-tier context watchdog: compact proactively at 80% of the window via the
+  // MANUAL compact path, carrying preserve-instructions. pi's threshold machinery is
+  // left untouched as a backstop — a live 50k/32k session showed it can fail silently
+  // (no-op settings band, error-message accounting, oversized summarization request),
+  // so we act before it's needed rather than intercepting it (the previous
+  // cancel+reissue hook risked suppressing compaction if the re-issue was dropped).
+  // At 95% — compactions evidently not landing — escalate to a visible warning:
+  // every failure mode in that incident was silent.
+  let watchdogCompactInFlight = false;
+  pi.on("session_compact", async () => {
+    watchdogCompactInFlight = false;
+  });
+  pi.on("turn_end", async (_event, ctx) => {
+    const usage = ctx.getContextUsage?.();
+    if (!usage) return;
+    const action = watchdogAction(tier, usage.tokens, usage.contextWindow, watchdogCompactInFlight);
+    if (action === undefined) return;
+    const pct = Math.round(((usage.tokens ?? 0) / usage.contextWindow) * 100);
+    if (action === "compact") {
+      watchdogCompactInFlight = true;
+      ctx.ui?.notify?.(`workbench-pi: context at ${pct}% of the window — compacting proactively.`, "info");
+      ctx.compact({
+        customInstructions: compactionPreserveInstructions(tier),
+        onComplete: () => {
+          watchdogCompactInFlight = false;
+        },
+        onError: () => {
+          watchdogCompactInFlight = false;
+          ctx.ui?.notify?.("workbench-pi: proactive compaction failed — context keeps growing. Run /compact or start a fresh session.", "warning");
+        },
+      });
+    } else {
+      ctx.ui?.notify?.(`workbench-pi: context at ${pct}% of the window and compaction is not landing — run /compact or start a fresh session.`, "warning");
+    }
   });
 
   // Observe verification runs so the gates know test state.
